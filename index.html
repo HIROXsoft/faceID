@@ -415,10 +415,9 @@ function apiJsonpRaw(fn, argsArray){
     recordPrivateOuting: ['name','kind','memo'],
     editAttendance: ['name','dateStr','field','mode','timeStr','freeText'],
     saveFaceDescriptors: ['name','descriptorsJson'],
+    saveFaceDescriptorsChunk: ['name','sid','idx','total','part'],
     listPendingEditsForConfirmer: ['confirmer'],
     approveEdit: ['rowNo','confirmer']
-     saveFaceDescriptorsChunk: ['name','sid','idx','total','chunk'],
-    finalizeFaceDescriptorsChunk: ['name','sid','total'],
   };
   const keys = map[fn];
   if(!keys) throw new Error('unknown api fn: '+fn);
@@ -450,31 +449,6 @@ function apiJsonpRaw(fn, argsArray){
     script.onerror=()=>{ cleanup(); reject(new Error('script load error')); };
     document.head.appendChild(script);
   });
-}
-
-
-async function saveFaceDescriptorsSafe(name, descriptorsJson){
-  const jsonStr = String(descriptorsJson || '');
-  // 小さいなら従来通り
-  if(jsonStr.length <= 1800){
-    const payload = await apiJsonpRaw('saveFaceDescriptors', [name, jsonStr]);
-    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
-    return payload.data;
-  }
-
-  const sid = 'sid_' + Math.random().toString(36).slice(2) + Date.now();
-  const chunkSize = 1200; // URL長制限対策
-  const total = Math.ceil(jsonStr.length / chunkSize);
-
-  for(let i=0;i<total;i++){
-    const part = jsonStr.slice(i*chunkSize, (i+1)*chunkSize);
-    const payload = await apiJsonpRaw('saveFaceDescriptorsChunk', [name, sid, String(i), String(total), part]);
-    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
-  }
-
-  const fin = await apiJsonpRaw('finalizeFaceDescriptorsChunk', [name, sid, String(total)]);
-  if(!fin || fin.ok !== true) throw new Error((fin && fin.error) ? fin.error : 'api error');
-  return fin.data;
 }
 
 // params(Object) をそのままクエリに載せてJSONP呼び出し（外部ホスト専用）
@@ -544,9 +518,6 @@ function callApi(fn, args){
     });
   }
   // external: JSONP (CORS回避)
-  if(fn==='saveFaceDescriptors'){
-    return saveFaceDescriptorsSafe(a[0], a[1]);
-  }
   return apiJsonpRaw(fn, a).then(payload=>{
     if(!payload || payload.ok !== true){
       throw new Error((payload && payload.error) ? payload.error : 'api error');
@@ -554,6 +525,43 @@ function callApi(fn, args){
     return payload.data;
   });
 }
+
+// ============================================================
+// 顔登録の保存：URL長制限（JSONP script load error）対策
+//  - まず通常保存
+//  - 失敗したら（またはJSONが長い場合）分割送信で保存
+// ============================================================
+async function saveFaceDescriptorsSafe(name, descriptorsArray) {
+  const jsonStr = JSON.stringify(descriptorsArray);
+
+  // まず通常（短いケースはこれでOK）
+  // ※ 外部ホスト(JSONP)ではURLが長すぎると script load error になる
+  const tooLong = jsonStr.length > 1500; // 目安（環境で変動）
+  if (!tooLong) {
+    try {
+      const res = await callApi('saveFaceDescriptors', [name, jsonStr]);
+      return res;
+    } catch (e) {
+      // fallthrough
+      console.warn('saveFaceDescriptors failed, fallback to chunk:', e);
+    }
+  }
+
+  // 分割送信
+  const sid = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+  const CHUNK = 900; // URL長を抑えるため小さめ
+  const parts = [];
+  for (let i = 0; i < jsonStr.length; i += CHUNK) parts.push(jsonStr.slice(i, i + CHUNK));
+
+  for (let i = 0; i < parts.length; i++) {
+    const payload = await callApi('saveFaceDescriptorsChunk', [name, sid, String(i), String(parts.length), parts[i]]);
+    if (!payload || payload.ok !== true) {
+      throw new Error((payload && payload.error) ? payload.error : 'chunk api error');
+    }
+  }
+  return { ok: true };
+}
+
 
 function apiPing(){
   if(isGasHost()){
@@ -1069,7 +1077,7 @@ async function loadDescriptors(){
         statusEl.textContent = '保存中...';
 
         try{
-          await callApi('saveFaceDescriptors', [registerName, JSON.stringify(registerDescriptors)]);
+          await saveFaceDescriptorsSafe(registerName, registerDescriptors);
           statusEl.textContent = `顔登録完了: ${registerName}`;
           log(`顔登録完了: ${registerName}（3回）`);
           await showGuide('顔登録が完了しました。', 'none', '閉じる');

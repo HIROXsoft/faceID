@@ -553,17 +553,27 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
     body: params.toString()
   });
 
-  // Strict verify: retry JSONP read a few times and confirm the name exists.
-  // If we can't confirm, treat it as failure (prevents false-success).
-  const maxTry = 4;
-  for (let i = 0; i < maxTry; i++){
-    await new Promise(r=>setTimeout(r, 400 + i*250));
-    const list = await callApi('getFaceDescriptors', []);
-    if (Array.isArray(list) && list.some(r => r && r.name === registerName)){
+  // Verify (best-effort): compare counts for this name (avoid false "success" when already registered)
+  let beforeCount = 0;
+  try{
+    const before = await callApi('getFaceDescriptors', []);
+    if (Array.isArray(before)) beforeCount = before.filter(r => r && r.name === registerName).length;
+  }catch(e){ /* ignore */ }
+
+  await new Promise(r=>setTimeout(r, 500));
+
+  try{
+    const after = await callApi('getFaceDescriptors', []);
+    const afterCount = Array.isArray(after) ? after.filter(r => r && r.name === registerName).length : 0;
+
+    // We expect new descriptors to be appended/updated. If count did not increase at all, treat as failure.
+    if (afterCount > beforeCount){
       return true;
     }
+    throw new Error('保存確認に失敗しました（スプレッドシートが更新されていません）');
+  }catch(e){
+    throw e;
   }
-  throw new Error('保存確認に失敗しました（外部ホストPOSTの戻りが読めないため）。GAS WebアプリURL(/exec)・APIキー・権限・デプロイを確認して、もう一度「この顔を登録」を実行してください。');
 }
 
 function apiPing(){

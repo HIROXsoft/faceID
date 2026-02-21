@@ -360,12 +360,6 @@
 const LS_URL='attend_webapp_url';
 const LS_KEY='attend_api_key';
 
-function isGasHost(){
-  // NOTE: 外部ホストでは google.script.run のポリフィルを定義するため、
-  // 「存在チェック」だと誤判定します。ホスト名で判定します。
-  const h = (location && location.hostname) ? String(location.hostname) : '';
-  return /(^|\.)script\.google\.com$/.test(h) || /(^|\.)googleusercontent\.com$/.test(h);
-}
 
 function loadSettings(){
   const u = localStorage.getItem(LS_URL)||'';
@@ -450,6 +444,92 @@ function apiJsonpRaw(fn, argsArray){
     document.head.appendChild(script);
   });
 }
+
+// ========= google.script.run polyfill (external host) =========
+// 外部ホストでは google.script.run が存在しないため、既存コードを崩さずに動かす目的で
+// JSONP(api=1) を使って GAS Webアプリを呼ぶ擬似実装を提供します。
+// ※ "google.script.run があるか" で GAS 判定すると誤判定するので、ホスト名で判定します。
+function isGasHost(){
+  const h = (location && location.hostname) ? String(location.hostname) : '';
+  return /(^|\.)script\.google\.com$/.test(h) || /(^|\.)googleusercontent\.com$/.test(h);
+}
+
+function callApiByName_(fnName, args, succ, fail){
+  // args -> params mapping (GAS側 doGet api=1 の fn に対応)
+  let params = {};
+  try{
+    if (fnName === 'getNameMasterOptions' || fnName === 'getFaceDescriptors' || fnName === 'ping'){
+      params = {};
+    } else if (fnName === 'saveFaceDescriptors'){
+      // saveFaceDescriptors(name, descriptorsJson)
+      params = { name: args[0] ?? '', descriptorsJson: args[1] ?? '' };
+    } else if (fnName === 'recordAttendance'){
+      params = { name: args[0] ?? '', kind: args[1] ?? '' };
+    } else if (fnName === 'recordPrivateOuting'){
+      params = { name: args[0] ?? '', kind: args[1] ?? '', memo: args[2] ?? '' };
+    } else if (fnName === 'editAttendance'){
+      params = { name: args[0] ?? '', dateStr: args[1] ?? '', field: args[2] ?? '', mode: args[3] ?? '', timeStr: args[4] ?? '', freeText: args[5] ?? '' };
+    } else if (fnName === 'getWeeklyStatus'){
+      params = { name: args[0] ?? '' };
+    } else if (fnName === 'listPendingEditsForConfirmer'){
+      params = { confirmer: args[0] ?? '' };
+    } else if (fnName === 'approveEdit'){
+      params = { rowNo: String(args[0] ?? ''), confirmer: args[1] ?? '' };
+    } else {
+      // 予期しない関数は、(object) 1引数ならそのまま params にし、そうでなければ args を渡す
+      if (args && args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
+        params = args[0];
+      } else {
+        params = { args: JSON.stringify(args || []) };
+      }
+    }
+  } catch(e){ params = { args: JSON.stringify(args || []) }; }
+
+  return apiJsonpRaw(fnName, params).then(payload=>{
+    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
+    return payload.data;
+  }).then(data=>{
+    if (typeof succ === 'function') succ(data);
+    return data;
+  }).catch(err=>{
+    if (typeof fail === 'function') fail(err);
+    throw err;
+  });
+}
+
+// 外部ホスト時のみポリフィルを設定
+(function(){
+  if (isGasHost()) return;
+
+  window.google = window.google || {};
+  google.script = google.script || {};
+
+  let __succ = null;
+  let __fail = null;
+
+  const base = {
+    withSuccessHandler: function(fn){ __succ = fn; return proxy; },
+    withFailureHandler: function(fn){ __fail = fn; return proxy; }
+  };
+
+  const proxy = new Proxy(base, {
+    get(target, prop){
+      if (prop in target) return target[prop];
+      // google.script.run.someFunction(...)
+      return function(...args){
+        // someFunction を api fn として呼ぶ
+        callApiByName_(String(prop), args, __succ, __fail);
+        // GASの google.script.run は戻り値を使わない想定が多いので this を返してチェーン可能にする
+        return proxy;
+      };
+    }
+  });
+
+  google.script.run = proxy;
+})();
+// ===========================================================
+
+
 
 function apiPing(){
   if(isGasHost()){
@@ -731,21 +811,7 @@ function loadPendingEdits(){
     }
 
     // モデル読み込み（CDN weights）
-    
-function __callApi__(fn, params, succ, fail){
-  return apiJsonpRaw(fn, params).then(payload=>{
-    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
-    return payload.data;
-  }).then(data=>{
-    if(typeof succ === 'function') succ(data);
-    return data;
-  }).catch(err=>{
-    if(typeof fail === 'function') fail(err);
-    throw err;
-  });
-}
-
-async function loadModelsInternal() {
+    async function loadModelsInternal() {
       statusEl.textContent = '顔認証モデルを読み込み中...';
       log('顔認証モデルを読み込み中...');
 

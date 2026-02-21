@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <title>顔認証 出退勤（外部ホスト）</title>
+  <script src="https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <style>
+    :root{font-size:16px}
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:16px;background:#f5f5f5}
+    .panel{background:#fff;border-radius:12px;padding:12px 14px;max-width:900px;margin:0 auto 12px;box-shadow:0 2px 6px rgba(0,0,0,0.08)}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    input{padding:10px 12px;border-radius:10px;border:1px solid #ccc;font-size:16px}
+    button{padding:10px 14px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:16px}
+    .primary{background:#1976d2;border-color:#1976d2;color:#fff}
+    video{width:min(100%,640px);height:auto;background:#000;border-radius:12px}
+    #status{margin-top:8px;font-size:14px}
+    #log{font-size:12px;white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h2 style="margin:0 0 6px;">顔認証 出退勤（外部ホスト）</h2>
+    <div style="font-size:12px;color:#666">※カメラ制限回避のため GitHub Pages 等で配信する版</div>
+    <div class="row" style="margin-top:10px">
+      <input id="webappUrl" style="min-width:340px;flex:1" placeholder="GAS WebアプリURL（.../exec）"/>
+      <input id="apiKey" style="min-width:240px" placeholder="APIキー"/>
+      <button onclick="saveSettings()">保存</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="panel" style="text-align:center">
+    <video id="video" autoplay muted playsinline></video>
+    <div class="row" style="justify-content:center;margin-top:10px">
+      <button class="primary" onclick="startCamera()">① カメラ起動</button>
+      <button class="primary" onclick="loadDescriptors()">② 顔データ読込</button>
+      <button class="primary" onclick="recognize()">③ 顔認証</button>
+    </div>
+    <div style="margin-top:8px">認識ユーザー: <b id="userName">未認識</b></div>
+    <div class="row" style="justify-content:center;margin-top:10px">
+      <button class="primary" onclick="punch('start')">出勤打刻</button>
+      <button class="primary" onclick="punch('end')">退勤打刻</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin:0 0 6px;">ログ</h3>
+    <div id="log"></div>
+  </div>
+
+<script>
+const LS_URL='attend_webapp_url';
+const LS_KEY='attend_api_key';
+
+function log(m) {
+  const el=document.getElementById('log');
+  const p=document.createElement('div');
+  p.textContent='['+new Date().toLocaleTimeString()+'] '+m;
+  el.prepend(p);
+}
+function setStatus(m) { document.getElementById('status').textContent=m||''; }
+
+function getBase() {
+  const url=(document.getElementById('webappUrl').value||'').trim();
+  const key=(document.getElementById('apiKey').value||'').trim();
+  if(!url||!key) throw new Error('WebアプリURL と APIキー を設定してください');
+  return {url, key};
+}
+function saveSettings() {
+  localStorage.setItem(LS_URL, document.getElementById('webappUrl').value||'');
+  localStorage.setItem(LS_KEY, document.getElementById('apiKey').value||'');
+  setStatus('保存しました');
+}
+function loadSettings() {
+  document.getElementById('webappUrl').value = localStorage.getItem(LS_URL)||'';
+  document.getElementById('apiKey').value = localStorage.getItem(LS_KEY)||'';
+}
+
+async function apiGet(fn, params={}) {
+  const base=getBase();
+  const u=new URL(base.url);
+  u.searchParams.set('api','1');
+  u.searchParams.set('fn',fn);
+  u.searchParams.set('key',base.key);
+  Object.keys(params).forEach(k=>u.searchParams.set(k, params[k]));
+  const res=await fetch(u.toString(), {method:'GET'});
+  const j=await res.json();
+  if(!j.ok) throw new Error(j.error||'api error');
+  return j.data;
+}
+async function apiPost(action, payload={}) {
+  const base=getBase();
+  const res=await fetch(base.url, {
+    method:'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(Object.assign({key:base.key, action}, payload))
+  });
+  const j=await res.json();
+  if(!j.ok) throw new Error(j.error||'api error');
+  return j.data;
+}
+
+let labeledDescriptors=[];
+let modelsLoaded=false;
+let recognizedName=null;
+
+async function ensureModels() {
+  if(modelsLoaded) return;
+  const urls=[
+    'https://unpkg.com/face-api.js@0.22.2/weights/',
+    'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/'
+  ];
+  for(const url of urls) {
+    try {
+      await faceapi.nets.tinyFaceDetector.loadFromUri(url);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(url);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(url);
+      modelsLoaded=true;
+      log('モデル読み込みOK: '+url);
+      return;
+    } catch(e) { log('モデル読み込み失敗: '+url); }
+  }
+  throw new Error('モデル読み込み失敗');
+}
+
+async function startCamera() {
+  try {
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});
+    const v=document.getElementById('video');
+    v.srcObject=stream;
+    await v.play();
+    setStatus('カメラ起動OK');
+    log('カメラ起動OK');
+  } catch(e) {
+    setStatus('カメラ起動NG: '+e.name);
+    log('カメラ起動NG: '+e.name+' '+e.message);
+  }
+}
+
+async function loadDescriptors() {
+  await ensureModels();
+  setStatus('顔データ読込中...');
+  const data=await apiGet('getFaceDescriptors');
+  const map=new Map();
+  (data||[]).forEach(it=>{
+    if(!it||!it.name||!it.descriptor) return;
+    const d=new Float32Array(it.descriptor);
+    if(!map.has(it.name)) map.set(it.name, []);
+    map.get(it.name).push(d);
+  });
+  labeledDescriptors = Array.from(map.entries()).map(([name, desc]) => new faceapi.LabeledFaceDescriptors(name, desc));
+  setStatus('顔データ読込OK: '+labeledDescriptors.length+'名');
+  log('顔データ読込OK: '+labeledDescriptors.length+'名');
+}
+
+async function captureDescriptor() {
+  await ensureModels();
+  const v=document.getElementById('video');
+  try { await v.play(); } catch(e) {}
+  await new Promise(r=>setTimeout(r,120));
+  const opt=new faceapi.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.5});
+  const det=await faceapi.detectAllFaces(v,opt).withFaceLandmarks().withFaceDescriptors();
+  if(!det||!det.length) return null;
+  return det[0].descriptor; // 最小版：最初の顔
+}
+
+async function recognize() {
+  if(!labeledDescriptors.length) return alert('先に顔データ読込');
+  setStatus('顔認証中...');
+  const desc=await captureDescriptor();
+  if(!desc) { setStatus('顔を検出できません'); return; }
+  const threshold=0.5;
+  const best = labeledDescriptors
+    .map(ld=>({
+      name: ld.label,
+      dist: ld.descriptors.reduce((m,d)=>Math.min(m, faceapi.euclideanDistance(desc,d)), 999)
+    }))
+    .sort((a,b)=>a.dist-b.dist)[0];
+  if(!best || best.dist>threshold) {
+    recognizedName=null;
+    document.getElementById('userName').textContent='未認識';
+    setStatus('未認識');
+    return;
+  }
+  recognizedName=best.name;
+  document.getElementById('userName').textContent=recognizedName;
+  setStatus('認証OK: '+recognizedName);
+  log('認証OK: '+recognizedName+' dist='+best.dist.toFixed(3));
+}
+
+async function punch(kind) {
+  if(!recognizedName) return alert('先に顔認証');
+  try {
+    const res=await apiPost('recordAttendance', {name:recognizedName, kind});
+    alert(kind==='start'?'出勤':'退勤'+' を記録しました');
+    log('打刻OK: '+kind+' '+JSON.stringify(res));
+  } catch(e) {
+    alert('打刻NG: '+e.message);
+    log('打刻NG: '+e.message);
+  }
+}
+
+window.addEventListener('load', ()=>{
+  loadSettings();
+});
+</script>
+</body>
+</html>

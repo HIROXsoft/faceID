@@ -361,7 +361,10 @@ const LS_URL='attend_webapp_url';
 const LS_KEY='attend_api_key';
 
 function isGasHost(){
-  return typeof google !== 'undefined' && google.script && google.script.run;
+  // NOTE: 外部ホストでは google.script.run のポリフィルを定義するため、
+  // 「存在チェック」だと誤判定します。ホスト名で判定します。
+  const h = (location && location.hostname) ? String(location.hostname) : '';
+  return /(^|\.)script\.google\.com$/.test(h) || /(^|\.)googleusercontent\.com$/.test(h);
 }
 
 function loadSettings(){

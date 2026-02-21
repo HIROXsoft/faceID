@@ -731,7 +731,21 @@ function loadPendingEdits(){
     }
 
     // モデル読み込み（CDN weights）
-    async function loadModelsInternal() {
+    
+function __callApi__(fn, params, succ, fail){
+  return apiJsonpRaw(fn, params).then(payload=>{
+    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
+    return payload.data;
+  }).then(data=>{
+    if(typeof succ === 'function') succ(data);
+    return data;
+  }).catch(err=>{
+    if(typeof fail === 'function') fail(err);
+    throw err;
+  });
+}
+
+async function loadModelsInternal() {
       statusEl.textContent = '顔認証モデルを読み込み中...';
       log('顔認証モデルを読み込み中...');
 
@@ -747,7 +761,7 @@ function loadPendingEdits(){
           await faceapi.nets.faceLandmark68Net.loadFromUri(url);
           await faceapi.nets.faceRecognitionNet.loadFromUri(url);
           modelsLoaded = true;
-          statusEl.textContent = 'モデル読み込み中。';
+          statusEl.textContent = 'モデル読み込み完了。';
           log(`モデル読み込み中: ${url}`);
           return;
         } catch (e) {
@@ -844,7 +858,11 @@ function loadPendingEdits(){
       if (!detections || detections.length === 0) return null;
 
       const selected = selectFaceInGuide(detections);
-      if (!selected) return null;
+      if (!selected) {
+        // ガイド枠にうまく重ならない端末向けフォールバック
+        log('ガイド枠内の顔が選べないため、先頭の顔でフォールバックします');
+        return detections[0].descriptor;
+      }
 
       return selected.descriptor;
     }

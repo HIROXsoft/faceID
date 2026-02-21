@@ -21,7 +21,7 @@
 <body>
   <div class="panel">
     <h2 style="margin:0 0 6px;">顔認証 出退勤（外部ホスト）</h2>
-    <div style="font-size:12px;color:#666">※カメラ制限回避のため GitHub Pages 等で配信する版（打刻はJSONPでAPI呼び出し）</div>
+    <div style="font-size:12px;color:#666">※カメラ制限回避のため GitHub Pages 等で配信する版（打刻はGETでAPI呼び出し）</div>
     <div class="row" style="margin-top:10px">
       <input id="webappUrl" style="min-width:340px;flex:1" placeholder="GAS WebアプリURL（.../exec）"/>
       <input id="apiKey" style="min-width:240px" placeholder="APIキー"/>
@@ -79,23 +79,21 @@ function loadSettings() {
 
 /**
  * JSONP で GAS を叩く（CORS回避）
- * - GAS側が ?callback=xxx を受け取り、 xxx({...}) を返す必要あり
+ * - GAS側: ?api=1&fn=...&key=...&callback=xxx を受けて xxx({ok:true,data:...}) を返す必要あり
  */
 function apiJsonp(fn, params={}) {
   const base=getBase();
   const u=new URL(base.url);
-
   u.searchParams.set('api','1');
   u.searchParams.set('fn',fn);
   u.searchParams.set('key',base.key);
-
   Object.keys(params).forEach(k=>u.searchParams.set(k, params[k]));
 
   const cb = '__cb_' + Math.random().toString(36).slice(2) + Date.now();
   u.searchParams.set('callback', cb);
 
   return new Promise((resolve, reject)=>{
-    const timeoutMs = 15000;
+    const timeoutMs = 20000;
     const t = setTimeout(()=>{
       cleanup();
       reject(new Error('timeout'));
@@ -107,11 +105,13 @@ function apiJsonp(fn, params={}) {
       if (script && script.parentNode) script.parentNode.removeChild(script);
     }
 
-    window[cb] = (j)=>{
+    window[cb] = (payload)=>{
       cleanup();
       try {
-        if(!j || !j.ok) throw new Error((j && j.error) ? j.error : 'api error');
-        resolve(j.data);
+        if(!payload || payload.ok !== true) {
+          throw new Error((payload && payload.error) ? payload.error : 'api error');
+        }
+        resolve(payload.data);
       } catch(err) {
         reject(err);
       }
@@ -122,10 +122,14 @@ function apiJsonp(fn, params={}) {
     script.async = true;
     script.onerror = ()=>{
       cleanup();
-      reject(new Error('load error (maybe deploy /exec is wrong or blocked)'));
+      reject(new Error('script load error'));
     };
     document.head.appendChild(script);
   });
+}
+
+async function apiGet(fn, params={}) {
+  return apiJsonp(fn, params);
 }
 
 let labeledDescriptors=[];
@@ -168,7 +172,7 @@ async function startCamera() {
 async function loadDescriptors() {
   await ensureModels();
   setStatus('顔データ読込中...');
-  const data=await apiJsonp('getFaceDescriptors');
+  const data=await apiGet('getFaceDescriptors');
   const map=new Map();
   (data||[]).forEach(it=>{
     if(!it||!it.name||!it.descriptor) return;
@@ -219,7 +223,7 @@ async function recognize() {
 async function punch(kind) {
   if(!recognizedName) return alert('先に顔認証');
   try {
-    const res = await apiJsonp('recordAttendance', { name: recognizedName, kind: kind });
+    const res = await apiGet('recordAttendance', { name: recognizedName, kind: kind });
     alert((kind==='start'?'出勤':'退勤') + ' を記録しました');
     log('打刻OK: '+kind+' '+JSON.stringify(res));
   } catch(e) {

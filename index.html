@@ -445,6 +445,16 @@ function apiJsonpRaw(fn, argsArray){
   });
 }
 
+async function callApiExternal(fn, params){
+  const payload = await apiJsonpRaw(fn, params || {});
+  if(!payload || payload.ok !== true){
+    throw new Error((payload && payload.error) ? payload.error : 'api error');
+  }
+  return payload.data;
+}
+
+
+
 // ========= google.script.run polyfill (external host) =========
 // 外部ホストでは google.script.run が存在しないため、既存コードを崩さずに動かす目的で
 // JSONP(api=1) を使って GAS Webアプリを呼ぶ擬似実装を提供します。

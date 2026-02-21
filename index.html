@@ -536,8 +536,13 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
     return await callApi('saveFaceDescriptors', [registerName, payloadJson]);
   }
 
-  // External host: POST (no-cors) + verify by JSONP read
+  // External host: POST (no-cors). We cannot read the response (opaque),
+  // so we MUST verify by reloading descriptors list via JSONP.
   const base = getBase(); // {url,key}
+
+  // Put minimal routing params also on query to avoid relying on body parsing.
+  const postUrl = base.url + (base.url.includes('?') ? '&' : '?') + 'api=1&fn=saveFaceDescriptorsPost&key=' + encodeURIComponent(base.key) + '&name=' + encodeURIComponent(registerName);
+
   const params = new URLSearchParams();
   params.set('api','1');
   params.set('fn','saveFaceDescriptorsPost');
@@ -545,27 +550,46 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
   params.set('name', registerName);
   params.set('descriptorsJson', payloadJson);
 
-  // NOTE: no-cors => response is opaque; we verify by reloading descriptors list
-  await fetch(base.url, {
+  await fetch(postUrl, {
     method: 'POST',
     mode: 'no-cors',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
     body: params.toString()
   });
 
-  // Verify (best-effort): wait a bit then reload list and ensure the name exists
-  await new Promise(r=>setTimeout(r, 400));
+  // Verify: wait a bit then reload list and ensure the name exists.
+  // If it doesn't, treat as failure and tell the user what to check.
+  await new Promise(r=>setTimeout(r, 800));
+
+  let list = null;
   try{
-    const list = await callApi('getFaceDescriptors', []);
-    if (Array.isArray(list) && list.some(r => r && r.name === registerName)){
-      return true;
-    }
+    list = await callApi('getFaceDescriptors', []);
   }catch(e){
-    // ignore verify error
+    throw new Error('顔データ保存後の確認（getFaceDescriptors）が失敗しました。WebアプリURL(/exec)とAPIキーを確認してください。
+' + (e && e.message ? e.message : String(e)));
   }
-  // even if verify fails (opaque), consider it successful and let user try recognition
+
+  const ok = Array.isArray(list) && list.some(r => r && r.name === registerName);
+  if(!ok){
+    throw new Error(
+      '顔データの保存確認に失敗しました（氏名マスタに反映されていません）。
+' +
+      '原因の多くは「Apps Script を新しいデプロイしていない / 画面の /exec URL が古い」ことです。
+
+' +
+      '確認手順:
+' +
+      '1) Apps Scriptで「デプロイ」→「新しいデプロイ」
+' +
+      '2) 発行された WebアプリURL（.../exec）をこの画面のURL欄に貼り直して保存
+' +
+      '3) もう一度 顔登録→保存
+'
+    );
+  }
   return true;
 }
+
 
 function apiPing(){
   if(isGasHost()){

@@ -398,60 +398,6 @@ function getBase(){
   return {url, key};
 }
 
-// =======================
-// GAS / 外部ホスト 共通API呼び出し
-// - GAS内（script.google.com）では google.script.run
-// - GitHub Pages等の外部ホストでは JSONP（CORS回避）
-// =======================
-function callApi(fn, params = {}) {
-  // 外部ホスト / GAS内 どちらでも「WebアプリURL（.../exec）」経由で統一（JSONP）
-  // ※GAS内でもこの方式ならCORSや権限差異で詰まりにくい
-
-  // JSONP
-  const { url, key } = getBase();
-  return new Promise((resolve, reject) => {
-    const cb = 'cb_' + Math.random().toString(36).slice(2);
-    const timeoutMs = 20000;
-
-    const qs = new URLSearchParams();
-    qs.set('api', '1');
-    qs.set('fn', fn);
-    qs.set('key', key);
-    Object.entries(params || {}).forEach(([k, v]) => {
-      if (v === undefined || v === null) return;
-      qs.set(k, String(v));
-    });
-    qs.set('callback', cb);
-
-    const src = url + (url.includes('?') ? '&' : '?') + qs.toString();
-
-    let timer = null;
-    const cleanup = () => {
-      try { delete window[cb]; } catch(e) { window[cb] = undefined; }
-      if (script && script.parentNode) script.parentNode.removeChild(script);
-      if (timer) clearTimeout(timer);
-    };
-
-    window[cb] = (resp) => {
-      cleanup();
-      if (!resp || resp.ok !== true) {
-        reject(new Error((resp && resp.error) ? resp.error : 'API error'));
-        return;
-      }
-      resolve(resp.data);
-    };
-
-    const script = document.createElement('script');
-    script.src = src;
-    script.onerror = () => { cleanup(); reject(new Error('jsonp load failed')); };
-    document.head.appendChild(script);
-
-    timer = setTimeout(() => { cleanup(); reject(new Error('jsonp timeout')); }, timeoutMs);
-  });
-}
-
-
-
 function apiJsonpRaw(fn, argsArray){
   const base=getBase();
   const u=new URL(base.url);
@@ -594,20 +540,39 @@ function renderApproveRows(rows){
       const rowNo = Number(r.rowNo||0);
       if(!rowNo) return alert('rowNoが不正です');
       if(!recognizedName) return alert('先に顔認証してください');
-      google.script.run
-        .withSuccessHandler(()=>{ alert('承認しました'); loadPendingEdits(); })
-        .withFailureHandler(err=>alert('承認NG: '+(err&&err.message?err.message:String(err))))
-        .approveEdit(rowNo, recognizedName);
+      if (isGasHost()) {
+        google.script.run
+          .withSuccessHandler(()=>{ alert('承認しました'); loadPendingEdits(); })
+          .withFailureHandler(err=>alert('承認NG: '+(err&&err.message?err.message:String(err))))
+          .approveEdit(rowNo, recognizedName);
+      } else {
+        apiJsonpRaw('approveEdit', [rowNo, recognizedName])
+          .then(payload => {
+            if(!payload || payload.ok !== true) throw new Error((payload && (payload.error||payload.message)) ? (payload.error||payload.message) : 'api error');
+            alert('承認しました');
+            loadPendingEdits();
+          })
+          .catch(e=>alert('承認NG: ' + e.message));
+      }
     });
   });
 }
 
 function loadPendingEdits(){
   if(!recognizedName){ alert('先に顔認証してください'); return; }
-  google.script.run
-    .withSuccessHandler(renderApproveRows)
-    .withFailureHandler(err=>alert('一覧取得NG: '+(err&&err.message?err.message:String(err))))
-    .listPendingEditsForConfirmer(recognizedName);
+  if (isGasHost()) {
+    google.script.run
+      .withSuccessHandler(renderApproveRows)
+      .withFailureHandler(err=>alert('一覧取得NG: '+(err&&err.message?err.message:String(err))))
+      .listPendingEditsForConfirmer(recognizedName);
+  } else {
+    apiJsonpRaw('listPendingEditsForConfirmer', [recognizedName])
+      .then(payload => {
+        if(!payload || payload.ok !== true) throw new Error((payload && (payload.error||payload.message)) ? (payload.error||payload.message) : 'api error');
+        renderApproveRows(payload.data);
+      })
+      .catch(e=>alert('一覧取得NG: ' + e.message));
+  }
 }
 
 // DOM（load後にセット）
@@ -984,8 +949,31 @@ async function loadDescriptors(){
 
       try {
         // ★氏名マスタから選択（グループ→氏名）。人物以外は除外。
-                const masterRes = await callApi('getNameMasterOptions', {});
-        const master = (masterRes && masterRes.data) ? masterRes.data : masterRes;
+        const master = await (async ()=>{
+          if (isGasHost()) {
+            return await new Promise((resolve, reject) => {
+              google.script.run
+                .withSuccessHandler(resolve)
+                .withFailureHandler(reject)
+                .getNameMasterOptions();
+            });
+          } else {
+            const payload = await apiJsonpDirect('getNameMasterOptions', {});
+            if(!payload || payload.ok !== true) throw new Error((payload && (payload.error||payload.message)) ? (payload.error||payload.message) : 'api error');
+            return payload.data;
+          }
+        })();
+
+        const groups = (master && master.groups) ? master.groups : [];
+        const namesByGroup = (master && master.namesByGroup) ? master.namesByGroup : {};
+
+        if (!groups.length) {
+          alert('氏名マスタに選択可能な氏名がありません（人物以外チェックが入っている行は除外されます）。');
+          registerInProgress = false;
+          return;
+        }
+
+        const groupItems = groups.map(g => ({ value: g, label: g }));
         const pickedGroup = await showGuideSelect(
           '登録するグループを選択してください。',
           'none',
@@ -1055,7 +1043,38 @@ async function loadDescriptors(){
         await showGuide('3回の撮影が完了しました。\n保存します。', 'none', '保存する');
         statusEl.textContent = '保存中...';
 
-                await callApi('saveFaceDescriptors', { name: registerName, descriptorsJson: JSON.stringify(registerDescriptors) });
+        (async ()=>{
+          if (isGasHost()) {
+            google.script.run
+              .withSuccessHandler(function () {
+                statusEl.textContent = `顔登録完了: ${registerName}`;
+                log(`顔登録完了: ${registerName}（3回）`);
+                showGuide('顔登録が完了しました。', 'none', '閉じる');
+                loadDescriptors();
+              })
+              .withFailureHandler(function (err) {
+                console.error(err);
+                statusEl.textContent = '保存に失敗しました: ' + (err && err.message ? err.message : err);
+                log('顔登録保存エラー: ' + (err && err.message ? err.message : err));
+                showGuide('保存に失敗しました。', 'none', '閉じる');
+              })
+              .saveFaceDescriptors(registerName, JSON.stringify(registerDescriptors));
+          } else {
+            try{
+              const payload = await apiJsonpRaw('saveFaceDescriptors', [registerName, JSON.stringify(registerDescriptors)]);
+              if(!payload || payload.ok !== true) throw new Error((payload && (payload.error||payload.message)) ? (payload.error||payload.message) : 'api error');
+              statusEl.textContent = `顔登録完了: ${registerName}`;
+              log(`顔登録完了: ${registerName}（3回）`);
+              showGuide('顔登録が完了しました。', 'none', '閉じる');
+              loadDescriptors();
+            }catch(err){
+              console.error(err);
+              statusEl.textContent = '保存に失敗しました: ' + err.message;
+              log('顔登録保存エラー: ' + err.message);
+              showGuide('保存に失敗しました。', 'none', '閉じる');
+            }
+          }
+        })();
 
       } catch (e) {
         console.error(e);
@@ -1154,163 +1173,43 @@ async function loadDescriptors(){
       statusEl.textContent = '出勤を記録中...';
       log(`出勤打刻: ${recognizedName}, kind=${kind}`);
 
-      google.script.run
-        .withSuccessHandler(function (result) {
-          statusEl.textContent = '出勤を記録しました。';
-          log(`出勤OK: ${result.sheet} R${result.row}C${result.col}="${result.value}"`);
-          alert(`出勤を記録しました。\n${recognizedName}\n値: ${result.value}`);
-          loadWeeklyStatus();
-          touchInactivityTimer();
-        })
-        .withFailureHandler(function (err) {
-          console.error(err);
-          statusEl.textContent = '出勤の記録に失敗しました: ' + err.message;
-          log('出勤エラー: ' + err.message);
-          alert('出勤の記録に失敗しました: ' + err.message);
-        })
-        .recordAttendance(recognizedName, kind);
-    }
-
-    function onClickEnd() {
-      touchInactivityTimer();
-      if (!recognizedName) { alert('先に「顔認証」を行ってください。'); return; }
-      const kind = 'end';
-
-      statusEl.textContent = '退勤を記録中...';
-      log(`退勤打刻: ${recognizedName}, kind=${kind}`);
-
-      google.script.run
-        .withSuccessHandler(function (result) {
-          statusEl.textContent = '退勤を記録しました。';
-          log(`退勤OK: ${result.sheet} R${result.row}C${result.col}="${result.value}"`);
-          alert(`退勤を記録しました。\n${recognizedName}\n値: ${result.value}`);
-          loadWeeklyStatus();
-          touchInactivityTimer();
-        })
-        .withFailureHandler(function (err) {
-          console.error(err);
-          statusEl.textContent = '退勤の記録に失敗しました: ' + err.message;
-          log('退勤エラー: ' + err.message);
-          alert('退勤の記録に失敗しました: ' + err.message);
-        })
-        .recordAttendance(recognizedName, kind);
-    }
-
-    // 私用外出
-    function onPrivateOut() {
-      touchInactivityTimer();
-      if (!recognizedName) { alert('先に「顔認証」を行ってください。'); return; }
-      const memo = (document.getElementById('privateMemo').value || '').trim();
-      statusEl.textContent = '外出開始を記録中...';
-      google.script.run
-        .withSuccessHandler(function (res) {
-          statusEl.textContent = '外出開始を記録しました。';
-          alert(`外出開始を記録しました\n${recognizedName}\n${res.date} ${res.time}`);
-          touchInactivityTimer();
-        })
-        .withFailureHandler(function (err) {
-          alert('外出開始の記録に失敗しました: ' + err.message);
-        })
-        .recordPrivateOuting(recognizedName, 'out', memo);
-    }
-
-    function onPrivateBack() {
-      touchInactivityTimer();
-      if (!recognizedName) { alert('先に「顔認証」を行ってください。'); return; }
-      const memo = (document.getElementById('privateMemo').value || '').trim();
-      statusEl.textContent = '戻りを記録中...';
-      google.script.run
-        .withSuccessHandler(function (res) {
-          statusEl.textContent = '戻りを記録しました。';
-          const extra = (res && res.message) ? (`\n\n${res.message}`) : '';
-          alert(`戻りを記録しました\n${recognizedName}\n${res.date} ${res.time}${extra}`);
-          touchInactivityTimer();
-        })
-        .withFailureHandler(function (err) {
-          alert('戻りの記録に失敗しました: ' + err.message);
-        })
-        .recordPrivateOuting(recognizedName, 'back', memo);
-    }
-
-
-    // 修正
-    function convertDateInputToSheetDate(dateInput) {
-      if (!dateInput) return '';
-      const parts = dateInput.split('-');
-      if (parts.length !== 3) return dateInput;
-      return parts[0] + '/' + parts[1] + '/' + parts[2];
-    }
-
-    function onEditStart() {
-      touchInactivityTimer();
-      if (!recognizedName) { alert('先に顔認証してください。'); return; }
-      const dateInput = document.getElementById('editDate').value;
-      if (!dateInput) { alert('日付を選択してください。'); return; }
-      const dateStr = convertDateInputToSheetDate(dateInput);
-
-      const modeEl = document.querySelector('input[name="startMode"]:checked');
-      if (!modeEl) { alert('出勤の修正方法を選択してください。'); return; }
-      const mode = modeEl.value;
-
-      let timeStr = '';
-      if (mode === 'time') {
-        timeStr = document.getElementById('editStartTime').value;
-        if (!timeStr) { alert('時刻を入力してください。'); return; }
-      }
-
-      let freeText = '';
-      if (mode === 'free') {
-        freeText = (document.getElementById('editStartFree').value || '');
-      }
-
-      statusEl.textContent = '出勤を修正中...';
-      google.script.run
-        .withSuccessHandler(function (result) {
-          statusEl.textContent = '出勤を修正しました。';
-          alert(`出勤を修正しました\n${dateStr}\n${result.oldValue} → ${result.newValue}`);
-          loadWeeklyStatus();
-          touchInactivityTimer();
-        })
-        .withFailureHandler(function (err) {
-          alert('出勤の修正に失敗しました:\n' + err.message);
-        })
-        .editAttendance(recognizedName, dateStr, 'start', mode, timeStr, freeText);
-    }
-
-    function onEditEnd() {
-      touchInactivityTimer();
-      if (!recognizedName) { alert('先に顔認証してください。'); return; }
-      const dateInput = document.getElementById('editDate').value;
-      if (!dateInput) { alert('日付を選択してください。'); return; }
-      const dateStr = convertDateInputToSheetDate(dateInput);
-
-      const modeEl = document.querySelector('input[name="endMode"]:checked');
-      if (!modeEl) { alert('退勤の修正方法を選択してください。'); return; }
-      const mode = modeEl.value;
-
-      let timeStr = '';
-      if (mode === 'time') {
-        timeStr = document.getElementById('editEndTime').value;
-        if (!timeStr) { alert('時刻を入力してください。'); return; }
-      }
-
-      let freeText = '';
-      if (mode === 'free') {
-        freeText = (document.getElementById('editEndFree').value || '');
-      }
-
-      statusEl.textContent = '退勤を修正中...';
-      google.script.run
-        .withSuccessHandler(function (result) {
-          statusEl.textContent = '退勤を修正しました。';
-          alert(`退勤を修正しました\n${dateStr}\n${result.oldValue} → ${result.newValue}`);
-          loadWeeklyStatus();
-          touchInactivityTimer();
-        })
-        .withFailureHandler(function (err) {
-          alert('退勤の修正に失敗しました:\n' + err.message);
-        })
-        .editAttendance(recognizedName, dateStr, 'end', mode, timeStr, freeText);
+      (async ()=>{
+        if (isGasHost()) {
+          (async ()=>{
+        if (isGasHost()) {
+          (async ()=>{
+        if (isGasHost()) {
+          (async ()=>{
+        if (isGasHost()) {
+          google.script.run
+            .withSuccessHandler(function (result) {
+              statusEl.textContent = '退勤を修正しました。';
+              alert(`退勤を修正しました\n${dateStr}\n${result.oldValue} → ${result.newValue}`);
+              loadWeeklyStatus();
+              touchInactivityTimer();
+            })
+            .withFailureHandler(function (err) {
+              console.error(err);
+              statusEl.textContent = '退勤の修正に失敗しました: ' + (err && err.message ? err.message : err);
+              log('退勤修正NG: ' + (err && err.message ? err.message : err));
+            })
+            .editAttendance(recognizedName, dateStr, 'end', mode, timeStr, freeText);
+        } else {
+          try{
+            const payload = await apiJsonpRaw('editAttendance', [recognizedName, dateStr, 'end', mode, timeStr, freeText]);
+            if(!payload || payload.ok !== true) throw new Error((payload && (payload.error||payload.message)) ? (payload.error||payload.message) : 'api error');
+            const result = payload.data || {};
+            statusEl.textContent = '退勤を修正しました。';
+            alert(`退勤を修正しました\n${dateStr}\n${result.oldValue} → ${result.newValue}`);
+            loadWeeklyStatus();
+            touchInactivityTimer();
+          }catch(err){
+            console.error(err);
+            statusEl.textContent = '退勤の修正に失敗しました: ' + err.message;
+            log('退勤修正NG: ' + err.message);
+          }
+        }
+      })();
     }
 
     // 1週間表示
@@ -1354,13 +1253,26 @@ async function loadDescriptors(){
 
       weeklyStatusEl.textContent = '今週（月〜日）を読み込み中...';
 
-      google.script.run
-        .withSuccessHandler(function (res) { renderWeeklyStatus(res); })
-        .withFailureHandler(function (err) {
-          console.error(err);
-          weeklyStatusEl.textContent = '読み込みに失敗しました: ' + err.message;
-        })
-        .getWeeklyStatus(recognizedName);
+      (async ()=>{
+        if (isGasHost()) {
+          google.script.run
+            .withSuccessHandler(function (res) { renderWeeklyStatus(res); })
+            .withFailureHandler(function (err) {
+              console.error(err);
+              weeklyStatusEl.textContent = '読み込みに失敗しました: ' + err.message;
+            })
+            .getWeeklyStatus(recognizedName);
+        } else {
+          try{
+            const payload = await apiJsonpRaw('getWeeklyStatus', [recognizedName]);
+            if(!payload || payload.ok !== true) throw new Error((payload && (payload.error||payload.message)) ? (payload.error||payload.message) : 'api error');
+            renderWeeklyStatus(payload.data);
+          }catch(err){
+            console.error(err);
+            weeklyStatusEl.textContent = '読み込みに失敗しました: ' + err.message;
+          }
+        }
+      })();
     }
 
     // 初期化（DOM取得は必ずここ）

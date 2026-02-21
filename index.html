@@ -265,35 +265,6 @@
   </div>
 
   <!-- 修正履歴の承認（確認者） -->
-<div class="panel" id="approvePanel" style="display:none">
-  <h3 style="margin-top:0;">修正履歴の承認（確認者）</h3>
-  <div class="small" style="color:#666;margin-bottom:8px">
-    顔認証で認識したユーザー名を確認者として、未承認の修正一覧を表示します。
-  </div>
-  <div class="row" style="gap:8px;flex-wrap:wrap">
-    <button class="btn btn-primary" onclick="loadPendingEdits(false)">未承認一覧を取得</button>
-    <span class="small" id="approveHint" style="color:#666"></span>
-  </div>
-
-  <div style="overflow:auto;max-height:50vh;margin-top:10px">
-    <table style="width:100%;border-collapse:collapse">
-      <thead>
-        <tr>
-          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:84px">操作</th>
-          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:110px">対象者</th>
-          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:100px">日付</th>
-          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:120px">項目</th>
-          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:160px">変更前 → 変更後</th>
-          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:220px">ログ情報</th>
-        </tr>
-      </thead>
-      <tbody id="approveTbody">
-        <tr><td colspan="6" class="small" style="padding:10px 6px;color:#666">未承認一覧はまだ取得していません。</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
 <!-- ③ 修正 -->
   <div class="panel">
     <h3>③ 打刻の修正</h3>
@@ -329,6 +300,39 @@
   </div>
 
   <!-- ガイド用オーバーレイ（拡張：入力・選択・キャンセル対応） -->
+
+  <!-- ★承認パネル（画面下部） -->
+<div class="panel" id="approvePanel" style="display:none">
+  <h3 style="margin-top:0;">修正履歴の承認（確認者）</h3>
+  <div class="small" style="color:#666;margin-bottom:8px">
+    顔認証で認識したユーザー名を確認者として、未承認の修正一覧を表示します。
+  </div>
+  <div class="row" style="gap:8px;flex-wrap:wrap">
+    <button class="btn btn-primary" onclick="loadPendingEdits(false)">未承認一覧を取得</button>
+    <span class="small" id="approveHint" style="color:#666"></span>
+  </div>
+
+  <div style="overflow:auto;max-height:50vh;margin-top:10px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:84px">操作</th>
+          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:110px">対象者</th>
+          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:100px">日付</th>
+          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:120px">項目</th>
+          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:160px">変更前 → 変更後</th>
+          <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #eee;background:#fafafa;position:sticky;top:0;min-width:220px">ログ情報</th>
+        </tr>
+      </thead>
+      <tbody id="approveTbody">
+        <tr><td colspan="6" class="small" style="padding:10px 6px;color:#666">未承認一覧はまだ取得していません。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+
+
   <div id="guideOverlay">
     <div class="guideBox">
       <div id="guideArrow" class="guideArrow"></div>
@@ -628,18 +632,21 @@ function apiPing(){
 
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
-function showApprovePanel(forceShow){
+function showApprovePanel(forceShow, count){
   const p=document.getElementById('approvePanel');
   if(!p) return;
-  // forceShow=true のときだけ表示（ただし認識名がない場合は必ず非表示）
+
   if(forceShow && recognizedName){
     p.style.display='block';
     const hint=document.getElementById('approveHint');
-    if(hint) hint.textContent = '確認者：' + recognizedName;
+    if(hint){
+      const c = (typeof count === 'number') ? count : null;
+      hint.textContent = '確認者：' + recognizedName + (c !== null ? ('（未承認 ' + c + '件）') : '');
+    }
   }else{
     p.style.display='none';
     const hint=document.getElementById('approveHint');
-    if(hint) hint.textContent = '';
+    if(hint) hint.textContent='';
   }
 }
 
@@ -671,17 +678,40 @@ function renderApproveRows(rows){
       if(!rowNo) return alert('rowNoが不正です');
       if(!recognizedName) return alert('先に顔認証してください');
       callApi('approveEdit', [rowNo, recognizedName])
-        .then(()=>{ alert('承認しました'); loadPendingEdits(); })
+        .then(()=>{ alert('承認しました'); loadPendingEdits(true); })
         .catch(err=>alert('承認NG: '+(err&&err.message?err.message:String(err))));
     });
   });
 }
 
-function loadPendingEdits(){
-  if(!recognizedName){ alert('先に顔認証してください'); return; }
+function loadPendingEdits(silent){
+  // silent=true: 0件でもalertしない（顔認証直後や承認後の自動更新向け）
+  if(!recognizedName){
+    showApprovePanel(false);
+    return;
+  }
+
   callApi('listPendingEditsForConfirmer', [recognizedName])
-    .then(renderApproveRows)
-    .catch(err=>alert('一覧取得NG: '+(err&&err.message?err.message:String(err))));
+    .then(rows=>{
+      const list = Array.isArray(rows) ? rows : [];
+      if(list.length <= 0){
+        // ★対象なし→パネル非表示
+        showApprovePanel(false);
+        if(!silent){
+          alert('未承認の修正はありません（確認者対象なし）');
+        }
+        return;
+      }
+      // 対象あり→表示して描画
+      showApprovePanel(true, list.length);
+      renderApproveRows(list);
+    })
+    .catch(err=>{
+      showApprovePanel(false);
+      if(!silent){
+        alert('一覧取得NG: '+(err&&err.message?err.message:String(err)));
+      }
+    });
 }
 
 // DOM（load後にセット）

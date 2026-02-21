@@ -398,6 +398,60 @@ function getBase(){
   return {url, key};
 }
 
+// =======================
+// GAS / 外部ホスト 共通API呼び出し
+// - GAS内（script.google.com）では google.script.run
+// - GitHub Pages等の外部ホストでは JSONP（CORS回避）
+// =======================
+function callApi(fn, params = {}) {
+  // 外部ホスト / GAS内 どちらでも「WebアプリURL（.../exec）」経由で統一（JSONP）
+  // ※GAS内でもこの方式ならCORSや権限差異で詰まりにくい
+
+  // JSONP
+  const { url, key } = getBase();
+  return new Promise((resolve, reject) => {
+    const cb = 'cb_' + Math.random().toString(36).slice(2);
+    const timeoutMs = 20000;
+
+    const qs = new URLSearchParams();
+    qs.set('api', '1');
+    qs.set('fn', fn);
+    qs.set('key', key);
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      qs.set(k, String(v));
+    });
+    qs.set('callback', cb);
+
+    const src = url + (url.includes('?') ? '&' : '?') + qs.toString();
+
+    let timer = null;
+    const cleanup = () => {
+      try { delete window[cb]; } catch(e) { window[cb] = undefined; }
+      if (script && script.parentNode) script.parentNode.removeChild(script);
+      if (timer) clearTimeout(timer);
+    };
+
+    window[cb] = (resp) => {
+      cleanup();
+      if (!resp || resp.ok !== true) {
+        reject(new Error((resp && resp.error) ? resp.error : 'API error'));
+        return;
+      }
+      resolve(resp.data);
+    };
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.onerror = () => { cleanup(); reject(new Error('jsonp load failed')); };
+    document.head.appendChild(script);
+
+    timer = setTimeout(() => { cleanup(); reject(new Error('jsonp timeout')); }, timeoutMs);
+  });
+}
+
+
+
 function apiJsonpRaw(fn, argsArray){
   const base=getBase();
   const u=new URL(base.url);
@@ -743,8 +797,8 @@ function loadPendingEdits(){
       log('顔認証モデルを読み込み中...');
 
       const CANDIDATE_URLS = [
-        'https://unpkg.com/face-api.js@0.22.2/weights/',
-        'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/'
+        './weights/',
+        'https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/'
       ];
 
       for (const url of CANDIDATE_URLS) {

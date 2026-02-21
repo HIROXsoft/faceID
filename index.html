@@ -629,21 +629,17 @@ function apiPing(){
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
 function showApprovePanel(forceShow){
-      const p=document.getElementById('approvePanel');
-      if(!p) return;
-
-      // forceShow=true のときだけ表示（ただし認識名がない場合は必ず非表示）
-      if(forceShow && recognizedName){
-        p.style.display='block';
-        const hint=document.getElementById('approveHint');
-        if(hint) hint.textContent = '確認者：' + recognizedName;
-      }else{
-        p.style.display='none';
-        const hint=document.getElementById('approveHint');
-        if(hint) hint.textContent = '';
-      }
-    }else{
+  const p=document.getElementById('approvePanel');
+  if(!p) return;
+  // forceShow=true のときだけ表示（ただし認識名がない場合は必ず非表示）
+  if(forceShow && recognizedName){
+    p.style.display='block';
+    const hint=document.getElementById('approveHint');
+    if(hint) hint.textContent = '確認者：' + recognizedName;
+  }else{
     p.style.display='none';
+    const hint=document.getElementById('approveHint');
+    if(hint) hint.textContent = '';
   }
 }
 
@@ -681,35 +677,12 @@ function renderApproveRows(rows){
   });
 }
 
-function loadPendingEdits(silent){
-      // silent=true: 0件でもalertしない（顔認証直後の自動判定用）
-      if(!recognizedName){
-        showApprovePanel(false);
-        return;
-      }
-      callApi('listPendingEditsForConfirmer', [recognizedName])
-        .then(rows=>{
-          const list = Array.isArray(rows) ? rows : [];
-          if(list.length <= 0){
-            // ★最重要：対象がない場合はパネルを出さない
-            showApprovePanel(false);
-            if(!silent){
-              alert('未承認の修正はありません（確認者対象なし）');
-            }
-            return;
-          }
-          showApprovePanel(true);
-          renderApproveRows(list);
-          const hint=document.getElementById('approveHint');
-          if(hint) hint.textContent = '確認者：' + recognizedName + '（未承認 ' + list.length + '件）';
-        })
-        .catch(err=>{
-          showApprovePanel(false);
-          if(!silent){
-            alert('一覧取得NG: '+(err&&err.message?err.message:String(err)));
-          }
-        });
-    }
+function loadPendingEdits(){
+  if(!recognizedName){ alert('先に顔認証してください'); return; }
+  callApi('listPendingEditsForConfirmer', [recognizedName])
+    .then(renderApproveRows)
+    .catch(err=>alert('一覧取得NG: '+(err&&err.message?err.message:String(err))));
+}
 
 // DOM（load後にセット）
     let video, statusEl, userNameEl, logEl, weeklyStatusEl;
@@ -1486,17 +1459,6 @@ try{
   if (!isGasHost()) {
     if (ext) ext.style.display = 'block';
     loadSettings();
-
-  // 外部ホスト（GitHub / file:// 等）では、元UIどおり「外部ホスト設定」を必ず表示
-  // ※ここは見た目の構造は変えず、表示/非表示の挙動だけを元に合わせます
-  try{
-    const ext = document.getElementById('extSettings');
-    if(ext){
-      if(!isGasHost()) ext.style.display='block';
-      else ext.style.display='none';
-    }
-  }catch(e){}
-
   } else {
     if (ext) ext.style.display = 'none';
   }

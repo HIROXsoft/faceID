@@ -163,9 +163,42 @@
       white-space: pre-line;
     }
   </style>
+<script>
+  // iframe内（例：GASの埋め込み表示）だとブラウザの権限ポリシーでカメラがブロックされます。
+  // 外部ホスト版は「トップレベル（別タブ）」で開いてください。
+  (function(){
+    try{
+      if (window.top !== window.self) {
+        // 可能ならトップへ遷移（ブロックされる環境もある）
+        try { window.top.location.href = window.location.href; } catch(e) {}
+        // それでもiframe内の場合は、案内を表示
+        window.__IN_IFRAME__ = true;
+      }
+    }catch(e){
+      window.__IN_IFRAME__ = true;
+    }
+  })();
+</script>
 </head>
 
 <body>
+<div id="iframeNotice" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;padding:18px;">
+  <div style="max-width:720px;margin:10vh auto;background:#fff;border-radius:14px;padding:16px 18px;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;">
+    <h2 style="margin:0 0 8px;font-size:18px;">この画面は埋め込み（iframe）で開かれています</h2>
+    <div style="font-size:14px;line-height:1.5;color:#333;">
+      ブラウザの権限ポリシーにより、iframe内ではカメラが起動できないことがあります。<br>
+      下のボタンから<strong>別タブで開く</strong>とカメラが起動します。
+    </div>
+    <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;">
+      <a id="openTopLink" target="_blank" rel="noopener" style="display:inline-block;padding:10px 14px;border-radius:10px;background:#1976d2;color:#fff;text-decoration:none;">別タブで開く</a>
+      <button onclick="document.getElementById('iframeNotice').style.display='none';" style="padding:10px 14px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer;">このまま続ける</button>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:#666;">
+      ※「このまま続ける」を選ぶと、カメラが起動しないままになる可能性があります。
+    </div>
+  </div>
+</div>
+
   <h1>顔認証出退勤 試運転用:3/23～4/24</h1>
 
 <!-- 外部ホスト設定（GAS内で開いた場合は非表示） -->
@@ -177,7 +210,7 @@
     <button class="btn btn-primary" onclick="saveSettings()">保存</button>
     <button class="btn" onclick="apiPing()">疎通確認</button>
   </div>
-  <div class="small" style="margin-top:6px;color:#666">※外部ホストからはJSONPでGASを呼び出します（CORS回避）。</div>
+  <div class="small" style="margin-top:6px;color:#666">※外部ホストからはJSONPでGASを呼び出します（CORS回避）。<br>※ file://（ローカル直開き）はブラウザによってカメラや通信が制限されるため、GitHub Pages 等の https で開いてください。</div>
 </div>
 
 
@@ -347,9 +380,19 @@ function saveSettings(){
 }
 
 function getBase(){
-  const url=(document.getElementById('webappUrl').value||'').trim();
-  const key=(document.getElementById('apiKey').value||'').trim();
-  if(!url||!key) throw new Error('WebアプリURL と APIキー を設定してください');
+  const urlEl = document.getElementById('webappUrl');
+  const keyEl = document.getElementById('apiKey');
+  const url=(urlEl ? (urlEl.value||'') : '').trim();
+  const key=(keyEl ? (keyEl.value||'') : '').trim();
+
+  if(!url || !key){
+    // 外部ホスト設定が閉じている/未入力のときは表示して案内
+    try{
+      const ext = document.getElementById('extSettings');
+      if (ext) ext.style.display = 'block';
+    }catch(e){}
+    throw new Error('外部ホストでは「GAS WebアプリURL（.../exec）」と「APIキー」の入力が必要です。上部の「外部ホスト設定」に入力して保存してください。');
+  }
   return {url, key};
 }
 
@@ -1254,6 +1297,17 @@ function loadPendingEdits(){
 
     // 初期化（DOM取得は必ずここ）
     window.addEventListener('load', async () => {
+
+// 外部ホストで開いた場合は「外部ホスト設定」を表示してURL/APIキーを読み込む
+try{
+  const ext = document.getElementById('extSettings');
+  if (!isGasHost()) {
+    if (ext) ext.style.display = 'block';
+    loadSettings();
+  } else {
+    if (ext) ext.style.display = 'none';
+  }
+}catch(e){}
       // DOM取得
       video = document.getElementById('video');
       statusEl = document.getElementById('status');

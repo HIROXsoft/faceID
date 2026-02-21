@@ -486,59 +486,85 @@ function apiJsonpDirect(fn, params){
   });
 }
 
-/**
- * ============================================================
- * 外部ホスト用 google.script.run ポリフィル（最小変更）
- * - 既存UI/ロジックは変更せず、サーバー呼び出しだけ外部でも動かす
- * - GAS内: 何もしない（本物のgoogle.script.runを使う）
- * - 外部: apiJsonpRaw/map を使ってJSONPでGASを呼ぶ
- * ============================================================
- */
-(function installGoogleScriptRunPolyfill(){
-  try{
-    if (typeof isGasHost === 'function' && isGasHost()) return; // GAS内は本物を使う
 
-    window.google = window.google || {};
-    google.script = google.script || {};
 
-    let __succ = null;
-    let __fail = null;
 
-    function __invoke(fnName, args){
-      return apiJsonpRaw(fnName, Array.isArray(args) ? args : [])
-        .then(payload=>{
-          if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
-          return payload.data;
-        })
-        .then(data=>{
-          if (typeof __succ === 'function') { try{ __succ(data); }catch(e){} }
-          return data;
-        })
-        .catch(err=>{
-          if (typeof __fail === 'function') { try{ __fail(err); }catch(e){} }
-          throw err;
-        });
-    }
+// ---------------------------------------------------------
+// GAS / 外部ホスト 共通のAPI呼び出し（google.script.run / JSONP）
+// ---------------------------------------------------------
+function normalizeGasError(err){
+  if(!err) return new Error('unknown error');
+  if(err instanceof Error) return err;
+  // GASのFailureHandlerは object だったり文字列だったりする
+  const msg = (err && err.message) ? err.message : String(err);
+  return new Error(msg);
+}
 
-    const runner = new Proxy({}, {
-      get(_t, prop){
-        if (prop === 'withSuccessHandler') return function(fn){ __succ = fn; return runner; };
-        if (prop === 'withFailureHandler') return function(fn){ __fail = fn; return runner; };
-        return function(...args){
-          __invoke(String(prop), args);
-          return runner;
-        };
+// fn は Code.gs の関数名（APIモードの fn と同名）
+// args は配列
+function callApi(fn, args){
+  const a = Array.isArray(args) ? args : [];
+  if (isGasHost()){
+    return new Promise((resolve,reject)=>{
+      try{
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(e=>reject(normalizeGasError(e)))
+          [fn](...a);
+      }catch(e){
+        reject(normalizeGasError(e));
       }
     });
-
-    google.script.run = runner;
-  }catch(e){
-    try{ console.warn('installGoogleScriptRunPolyfill failed', e); }catch(_){}
   }
-})();
+  // external: JSONP (CORS回避)
+  return apiJsonpRaw(fn, a).then(payload=>{
+    if(!payload || payload.ok !== true){
+      throw new Error((payload && payload.error) ? payload.error : 'api error');
+    }
+    return payload.data;
+  });
+}
 
 
+// ---- Face register save (external host): POST to avoid URL length limit ----
+async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
+  // descriptorsObj: array of Float32Array-like values (plain JS arrays)
+  const payloadJson = JSON.stringify(descriptorsObj);
 
+  // GAS host: normal call
+  if (isGasHost()){
+    return await callApi('saveFaceDescriptors', [registerName, payloadJson]);
+  }
+
+  // External host: POST (no-cors) + verify by JSONP read
+  const base = getBase(); // {url,key}
+  const params = new URLSearchParams();
+  params.set('api','1');
+  params.set('fn','saveFaceDescriptorsPost');
+  params.set('key', base.key);
+  params.set('name', registerName);
+  params.set('descriptorsJson', payloadJson);
+
+  // NOTE: no-cors => response is opaque; we verify by reloading descriptors list
+  await fetch(base.url, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    body: params.toString()
+  });
+
+  // Strict verify: retry JSONP read a few times and confirm the name exists.
+  // If we can't confirm, treat it as failure (prevents false-success).
+  const maxTry = 4;
+  for (let i = 0; i < maxTry; i++){
+    await new Promise(r=>setTimeout(r, 400 + i*250));
+    const list = await callApi('getFaceDescriptors', []);
+    if (Array.isArray(list) && list.some(r => r && r.name === registerName)){
+      return true;
+    }
+  }
+  throw new Error('保存確認に失敗しました（外部ホストPOSTの戻りが読めないため）。GAS WebアプリURL(/exec)・APIキー・権限・デプロイを確認して、もう一度「この顔を登録」を実行してください。');
+}
 
 function apiPing(){
   if(isGasHost()){
@@ -592,20 +618,18 @@ function renderApproveRows(rows){
       const rowNo = Number(r.rowNo||0);
       if(!rowNo) return alert('rowNoが不正です');
       if(!recognizedName) return alert('先に顔認証してください');
-      google.script.run
-        .withSuccessHandler(()=>{ alert('承認しました'); loadPendingEdits(); })
-        .withFailureHandler(err=>alert('承認NG: '+(err&&err.message?err.message:String(err))))
-        .approveEdit(rowNo, recognizedName);
+      callApi('approveEdit', [rowNo, recognizedName])
+        .then(()=>{ alert('承認しました'); loadPendingEdits(); })
+        .catch(err=>alert('承認NG: '+(err&&err.message?err.message:String(err))));
     });
   });
 }
 
 function loadPendingEdits(){
   if(!recognizedName){ alert('先に顔認証してください'); return; }
-  google.script.run
-    .withSuccessHandler(renderApproveRows)
-    .withFailureHandler(err=>alert('一覧取得NG: '+(err&&err.message?err.message:String(err))))
-    .listPendingEditsForConfirmer(recognizedName);
+  callApi('listPendingEditsForConfirmer', [recognizedName])
+    .then(renderApproveRows)
+    .catch(err=>alert('一覧取得NG: '+(err&&err.message?err.message:String(err))));
 }
 
 // DOM（load後にセット）
@@ -795,8 +819,8 @@ function loadPendingEdits(){
       log('顔認証モデルを読み込み中...');
 
       const CANDIDATE_URLS = [
-        'https://unpkg.com/face-api.js@0.22.2/weights/',
-        'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/'
+        './weights/',
+        'https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/'
       ];
 
       for (const url of CANDIDATE_URLS) {
@@ -806,7 +830,7 @@ function loadPendingEdits(){
           await faceapi.nets.faceLandmark68Net.loadFromUri(url);
           await faceapi.nets.faceRecognitionNet.loadFromUri(url);
           modelsLoaded = true;
-          statusEl.textContent = 'モデル読み込み完了。';
+          statusEl.textContent = 'モデル読み込み中。';
           log(`モデル読み込み中: ${url}`);
           return;
         } catch (e) {
@@ -914,15 +938,7 @@ async function loadDescriptors(){
   await ensureModelsLoaded();
   try{
     let data;
-    if (isGasHost()) {
-      data = await new Promise((resolve,reject)=>{
-        google.script.run.withSuccessHandler(resolve).withFailureHandler(err=>reject(new Error(err && err.message ? err.message : String(err)))).getFaceDescriptors();
-      });
-    } else {
-      const payload = await apiJsonpDirect('getFaceDescriptors', {});
-      if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
-      data = payload.data;
-    }
+    data = await callApi('getFaceDescriptors', []);
 
     if (!data || !Array.isArray(data) || data.length === 0) {
       labeledDescriptors = [];
@@ -982,12 +998,7 @@ async function loadDescriptors(){
 
       try {
         // ★氏名マスタから選択（グループ→氏名）。人物以外は除外。
-        const master = await new Promise((resolve, reject) => {
-          google.script.run
-            .withSuccessHandler(resolve)
-            .withFailureHandler(reject)
-            .getNameMasterOptions();
-        });
+        const master = await callApi('getNameMasterOptions', []);
 
         const groups = (master && master.groups) ? master.groups : [];
         const namesByGroup = (master && master.namesByGroup) ? master.namesByGroup : {};
@@ -1068,19 +1079,17 @@ async function loadDescriptors(){
         await showGuide('3回の撮影が完了しました。\n保存します。', 'none', '保存する');
         statusEl.textContent = '保存中...';
 
-        google.script.run
-          .withSuccessHandler(function () {
-            statusEl.textContent = `顔登録完了: ${registerName}`;
-            log(`顔登録完了: ${registerName}（3回）`);
-            showGuide('顔登録が完了しました。', 'none', '閉じる');
-            loadDescriptors();
-          })
-          .withFailureHandler(function (err) {
-            console.error(err);
-            statusEl.textContent = '顔登録に失敗しました: ' + err.message;
-            alert('顔登録エラー: ' + err.message);
-          })
-          .saveFaceDescriptors(registerName, JSON.stringify(registerDescriptors));
+        try{
+          await saveFaceDescriptorsSafe(registerName, registerDescriptors);
+          statusEl.textContent = `顔登録完了: ${registerName}`;
+          log(`顔登録完了: ${registerName}（3回）`);
+          await showGuide('顔登録が完了しました。', 'none', '閉じる');
+          await loadDescriptors();
+        }catch(err){
+          console.error(err);
+          statusEl.textContent = '顔登録に失敗しました: ' + err.message;
+          alert('顔登録エラー: ' + err.message);
+        }
 
       } catch (e) {
         console.error(e);
@@ -1179,21 +1188,20 @@ async function loadDescriptors(){
       statusEl.textContent = '出勤を記録中...';
       log(`出勤打刻: ${recognizedName}, kind=${kind}`);
 
-      google.script.run
-        .withSuccessHandler(function (result) {
+      callApi('recordAttendance', [recognizedName, kind])
+        .then(function (result) {
           statusEl.textContent = '出勤を記録しました。';
           log(`出勤OK: ${result.sheet} R${result.row}C${result.col}="${result.value}"`);
           alert(`出勤を記録しました。\n${recognizedName}\n値: ${result.value}`);
           loadWeeklyStatus();
           touchInactivityTimer();
         })
-        .withFailureHandler(function (err) {
+        .catch(function (err) {
           console.error(err);
           statusEl.textContent = '出勤の記録に失敗しました: ' + err.message;
           log('出勤エラー: ' + err.message);
           alert('出勤の記録に失敗しました: ' + err.message);
-        })
-        .recordAttendance(recognizedName, kind);
+        });
     }
 
     function onClickEnd() {
@@ -1204,21 +1212,20 @@ async function loadDescriptors(){
       statusEl.textContent = '退勤を記録中...';
       log(`退勤打刻: ${recognizedName}, kind=${kind}`);
 
-      google.script.run
-        .withSuccessHandler(function (result) {
+      callApi('recordAttendance', [recognizedName, kind])
+        .then(function (result) {
           statusEl.textContent = '退勤を記録しました。';
           log(`退勤OK: ${result.sheet} R${result.row}C${result.col}="${result.value}"`);
           alert(`退勤を記録しました。\n${recognizedName}\n値: ${result.value}`);
           loadWeeklyStatus();
           touchInactivityTimer();
         })
-        .withFailureHandler(function (err) {
+        .catch(function (err) {
           console.error(err);
           statusEl.textContent = '退勤の記録に失敗しました: ' + err.message;
           log('退勤エラー: ' + err.message);
           alert('退勤の記録に失敗しました: ' + err.message);
-        })
-        .recordAttendance(recognizedName, kind);
+        });
     }
 
     // 私用外出
@@ -1227,16 +1234,15 @@ async function loadDescriptors(){
       if (!recognizedName) { alert('先に「顔認証」を行ってください。'); return; }
       const memo = (document.getElementById('privateMemo').value || '').trim();
       statusEl.textContent = '外出開始を記録中...';
-      google.script.run
-        .withSuccessHandler(function (res) {
+      callApi('recordPrivateOuting', [recognizedName, 'out', memo])
+        .then(function (res) {
           statusEl.textContent = '外出開始を記録しました。';
           alert(`外出開始を記録しました\n${recognizedName}\n${res.date} ${res.time}`);
           touchInactivityTimer();
         })
-        .withFailureHandler(function (err) {
+        .catch(function (err) {
           alert('外出開始の記録に失敗しました: ' + err.message);
-        })
-        .recordPrivateOuting(recognizedName, 'out', memo);
+        });
     }
 
     function onPrivateBack() {
@@ -1244,17 +1250,16 @@ async function loadDescriptors(){
       if (!recognizedName) { alert('先に「顔認証」を行ってください。'); return; }
       const memo = (document.getElementById('privateMemo').value || '').trim();
       statusEl.textContent = '戻りを記録中...';
-      google.script.run
-        .withSuccessHandler(function (res) {
+      callApi('recordPrivateOuting', [recognizedName, 'back', memo])
+        .then(function (res) {
           statusEl.textContent = '戻りを記録しました。';
           const extra = (res && res.message) ? (`\n\n${res.message}`) : '';
           alert(`戻りを記録しました\n${recognizedName}\n${res.date} ${res.time}${extra}`);
           touchInactivityTimer();
         })
-        .withFailureHandler(function (err) {
+        .catch(function (err) {
           alert('戻りの記録に失敗しました: ' + err.message);
-        })
-        .recordPrivateOuting(recognizedName, 'back', memo);
+        });
     }
 
 
@@ -1289,17 +1294,16 @@ async function loadDescriptors(){
       }
 
       statusEl.textContent = '出勤を修正中...';
-      google.script.run
-        .withSuccessHandler(function (result) {
+      callApi('editAttendance', [recognizedName, dateStr, 'start', mode, timeStr, freeText])
+        .then(function (result) {
           statusEl.textContent = '出勤を修正しました。';
           alert(`出勤を修正しました\n${dateStr}\n${result.oldValue} → ${result.newValue}`);
           loadWeeklyStatus();
           touchInactivityTimer();
         })
-        .withFailureHandler(function (err) {
+        .catch(function (err) {
           alert('出勤の修正に失敗しました:\n' + err.message);
-        })
-        .editAttendance(recognizedName, dateStr, 'start', mode, timeStr, freeText);
+        });
     }
 
     function onEditEnd() {
@@ -1325,17 +1329,16 @@ async function loadDescriptors(){
       }
 
       statusEl.textContent = '退勤を修正中...';
-      google.script.run
-        .withSuccessHandler(function (result) {
+      callApi('editAttendance', [recognizedName, dateStr, 'end', mode, timeStr, freeText])
+        .then(function (result) {
           statusEl.textContent = '退勤を修正しました。';
           alert(`退勤を修正しました\n${dateStr}\n${result.oldValue} → ${result.newValue}`);
           loadWeeklyStatus();
           touchInactivityTimer();
         })
-        .withFailureHandler(function (err) {
+        .catch(function (err) {
           alert('退勤の修正に失敗しました:\n' + err.message);
-        })
-        .editAttendance(recognizedName, dateStr, 'end', mode, timeStr, freeText);
+        });
     }
 
     // 1週間表示
@@ -1379,13 +1382,12 @@ async function loadDescriptors(){
 
       weeklyStatusEl.textContent = '今週（月〜日）を読み込み中...';
 
-      google.script.run
-        .withSuccessHandler(function (res) { renderWeeklyStatus(res); })
-        .withFailureHandler(function (err) {
+      callApi('getWeeklyStatus', [recognizedName])
+        .then(function (res) { renderWeeklyStatus(res); })
+        .catch(function (err) {
           console.error(err);
           weeklyStatusEl.textContent = '読み込みに失敗しました: ' + err.message;
-        })
-        .getWeeklyStatus(recognizedName);
+        });
     }
 
     // 初期化（DOM取得は必ずここ）

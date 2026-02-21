@@ -21,7 +21,7 @@
 <body>
   <div class="panel">
     <h2 style="margin:0 0 6px;">顔認証 出退勤（外部ホスト）</h2>
-    <div style="font-size:12px;color:#666">※カメラ制限回避のため GitHub Pages 等で配信する版</div>
+    <div style="font-size:12px;color:#666">※カメラ制限回避のため GitHub Pages 等で配信する版（打刻はGETでAPI呼び出し）</div>
     <div class="row" style="margin-top:10px">
       <input id="webappUrl" style="min-width:340px;flex:1" placeholder="GAS WebアプリURL（.../exec）"/>
       <input id="apiKey" style="min-width:240px" placeholder="APIキー"/>
@@ -192,8 +192,8 @@ async function recognize() {
 async function punch(kind) {
   if(!recognizedName) return alert('先に顔認証');
   try {
-    const res=await apiPost('recordAttendance', {name:recognizedName, kind});
-    alert(kind==='start'?'出勤':'退勤'+' を記録しました');
+    const res = await apiGet('recordAttendance', { name: recognizedName, kind: kind });
+    alert((kind==='start'?'出勤':'退勤') + ' を記録しました');
     log('打刻OK: '+kind+' '+JSON.stringify(res));
   } catch(e) {
     alert('打刻NG: '+e.message);

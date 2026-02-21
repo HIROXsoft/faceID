@@ -538,6 +538,23 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
 
   // External host: POST (no-cors) + verify by JSONP read
   const base = getBase(); // {url,key}
+
+  // Before snapshot (to verify overwrite as well as new insert)
+  let beforeStr = null;
+  try{
+    const beforeList = await callApi('getFaceDescriptors', []);
+    if (Array.isArray(beforeList)){
+      const b = beforeList.find(r => r && (r.name === registerName || r.label === registerName));
+      if (b){
+        const v = (typeof b.descriptor !== 'undefined') ? b.descriptor : b.descriptors;
+        // stringify in a stable way (string stays string)
+        beforeStr = (typeof v === 'string') ? v : JSON.stringify(v);
+      }
+    }
+  }catch(e){
+    // ignore
+  }
+
   const params = new URLSearchParams();
   params.set('api','1');
   params.set('fn','saveFaceDescriptorsPost');
@@ -545,7 +562,7 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
   params.set('name', registerName);
   params.set('descriptorsJson', payloadJson);
 
-  // NOTE: no-cors => response is opaque; we verify by reloading descriptors list
+  // NOTE: no-cors => response is opaque; we must verify by reloading descriptors list
   await fetch(base.url, {
     method: 'POST',
     mode: 'no-cors',
@@ -553,27 +570,49 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
     body: params.toString()
   });
 
-  // Verify (best-effort): compare counts for this name (avoid false "success" when already registered)
-  let beforeCount = 0;
-  try{
-    const before = await callApi('getFaceDescriptors', []);
-    if (Array.isArray(before)) beforeCount = before.filter(r => r && r.name === registerName).length;
-  }catch(e){ /* ignore */ }
+  // Verify: poll getFaceDescriptors and confirm either
+  //  - the name newly appears, OR
+  //  - the stored JSON changes compared with beforeStr, OR
+  //  - the stored value is non-empty and beforeStr was null (first-time save)
+  const deadline = Date.now() + 8000; // up to 8s
+  let lastErr = null;
 
-  await new Promise(r=>setTimeout(r, 500));
+  while (Date.now() < deadline){
+    await new Promise(r=>setTimeout(r, 500));
+    try{
+      const list = await callApi('getFaceDescriptors', []);
+      if (!Array.isArray(list)) continue;
 
-  try{
-    const after = await callApi('getFaceDescriptors', []);
-    const afterCount = Array.isArray(after) ? after.filter(r => r && r.name === registerName).length : 0;
+      const rec = list.find(r => r && (r.name === registerName || r.label === registerName));
+      if (!rec) continue;
 
-    // We expect new descriptors to be appended/updated. If count did not increase at all, treat as failure.
-    if (afterCount > beforeCount){
-      return true;
+      const v = (typeof rec.descriptor !== 'undefined') ? rec.descriptor : rec.descriptors;
+
+      // If saved value exists and is not empty, decide success:
+      if (typeof v === 'string'){
+        const s = v.trim();
+        if (s){
+          if (beforeStr === null) return true;           // appeared with value
+          if (s !== beforeStr) return true;              // overwritten
+        }
+      }else{
+        // object/array
+        const s = JSON.stringify(v);
+        if (s && s !== 'null' && s !== '[]'){
+          if (beforeStr === null) return true;
+          if (s !== beforeStr) return true;
+        }
+      }
+
+      // If we get here, record exists but unchanged; keep polling
+    }catch(e){
+      lastErr = e;
     }
-    throw new Error('保存確認に失敗しました（スプレッドシートが更新されていません）');
-  }catch(e){
-    throw e;
   }
+
+  // If verification fails, treat as failure (so the user is not misled)
+  const extra = lastErr ? (' / ' + lastErr.message) : '';
+  throw new Error('保存確認に失敗しました（スプレッドシートが更新されていません）' + extra);
 }
 
 function apiPing(){

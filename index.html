@@ -549,12 +549,13 @@ async function saveFaceDescriptorsSafe(name, descriptorsArray) {
 
   // 分割送信
   const sid = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
-  const CHUNK = 900; // URL長を抑えるため小さめ
-  const parts = [];
+  const CHUNK = 220; // 1リクエストURLを確実に短くする（URLエンコードで膨らむため）nst parts = [];
   for (let i = 0; i < jsonStr.length; i += CHUNK) parts.push(jsonStr.slice(i, i + CHUNK));
 
   for (let i = 0; i < parts.length; i++) {
     const payload = await callApi('saveFaceDescriptorsChunk', [name, sid, String(i), String(parts.length), parts[i]]);
+    // 連投すると失敗しやすい環境があるため少し待つ
+    await new Promise(r=>setTimeout(r, 120));
     if (!payload || payload.ok !== true) {
       throw new Error((payload && payload.error) ? payload.error : 'chunk api error');
     }

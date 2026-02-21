@@ -486,6 +486,58 @@ function apiJsonpDirect(fn, params){
   });
 }
 
+/**
+ * ============================================================
+ * 外部ホスト用 google.script.run ポリフィル（最小変更）
+ * - 既存UI/ロジックは変更せず、サーバー呼び出しだけ外部でも動かす
+ * - GAS内: 何もしない（本物のgoogle.script.runを使う）
+ * - 外部: apiJsonpRaw/map を使ってJSONPでGASを呼ぶ
+ * ============================================================
+ */
+(function installGoogleScriptRunPolyfill(){
+  try{
+    if (typeof isGasHost === 'function' && isGasHost()) return; // GAS内は本物を使う
+
+    window.google = window.google || {};
+    google.script = google.script || {};
+
+    let __succ = null;
+    let __fail = null;
+
+    function __invoke(fnName, args){
+      return apiJsonpRaw(fnName, Array.isArray(args) ? args : [])
+        .then(payload=>{
+          if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
+          return payload.data;
+        })
+        .then(data=>{
+          if (typeof __succ === 'function') { try{ __succ(data); }catch(e){} }
+          return data;
+        })
+        .catch(err=>{
+          if (typeof __fail === 'function') { try{ __fail(err); }catch(e){} }
+          throw err;
+        });
+    }
+
+    const runner = new Proxy({}, {
+      get(_t, prop){
+        if (prop === 'withSuccessHandler') return function(fn){ __succ = fn; return runner; };
+        if (prop === 'withFailureHandler') return function(fn){ __fail = fn; return runner; };
+        return function(...args){
+          __invoke(String(prop), args);
+          return runner;
+        };
+      }
+    });
+
+    google.script.run = runner;
+  }catch(e){
+    try{ console.warn('installGoogleScriptRunPolyfill failed', e); }catch(_){}
+  }
+})();
+
+
 
 
 function apiPing(){
@@ -754,7 +806,7 @@ function loadPendingEdits(){
           await faceapi.nets.faceLandmark68Net.loadFromUri(url);
           await faceapi.nets.faceRecognitionNet.loadFromUri(url);
           modelsLoaded = true;
-          statusEl.textContent = 'モデル読み込み中。';
+          statusEl.textContent = 'モデル読み込み完了。';
           log(`モデル読み込み中: ${url}`);
           return;
         } catch (e) {

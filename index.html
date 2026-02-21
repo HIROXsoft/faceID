@@ -361,7 +361,10 @@ const LS_URL='attend_webapp_url';
 const LS_KEY='attend_api_key';
 
 function isGasHost(){
-  return typeof google !== 'undefined' && google.script && google.script.run;
+  // 外部ホストでは google.script.run のポリフィルを定義するため「存在チェック」だと誤判定します。
+  // ホスト名で判定します。
+  const h = (location && location.hostname) ? String(location.hostname) : '';
+  return /(^|\.)script\.google\.com$/.test(h) || /(^|\.)googleusercontent\.com$/.test(h);
 }
 
 function loadSettings(){
@@ -380,9 +383,18 @@ function saveSettings(){
 }
 
 function getBase(){
-  const url=(document.getElementById('webappUrl').value||'').trim();
-  const key=(document.getElementById('apiKey').value||'').trim();
-  if(!url||!key) throw new Error('WebアプリURL と APIキー を設定してください');
+  const urlEl = document.getElementById('webappUrl');
+  const keyEl = document.getElementById('apiKey');
+  const url=(urlEl ? (urlEl.value||'') : '').trim();
+  const key=(keyEl ? (keyEl.value||'') : '').trim();
+
+  if(!url || !key){
+    try{
+      const ext = document.getElementById('extSettings');
+      if (ext) ext.style.display='block';
+    }catch(e){}
+    throw new Error('外部ホストでは「GAS WebアプリURL（.../exec）」と「APIキー」を入力して保存してください。');
+  }
   return {url, key};
 }
 
@@ -1332,6 +1344,17 @@ async function loadDescriptors(){
       userNameEl = document.getElementById('userName');
       logEl = document.getElementById('log');
       weeklyStatusEl = document.getElementById('weeklyStatus');
+
+// 外部ホスト（GitHub Pages等）ではURL/APIキー入力欄を表示
+try{
+  const ext = document.getElementById('extSettings');
+  if (!isGasHost()) {
+    if (ext) ext.style.display = 'block';
+    loadSettings();
+  } else {
+    if (ext) ext.style.display = 'none';
+  }
+}catch(e){}
 
       guideOverlay = document.getElementById('guideOverlay');
       guideMessage = document.getElementById('guideMessage');

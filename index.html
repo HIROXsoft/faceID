@@ -44,6 +44,33 @@
     </div>
   </div>
 
+  <div class="panel" id="approvePanel" style="display:none">
+  <h3 style="margin:0 0 6px;">修正履歴の承認（確認者）</h3>
+  <div style="font-size:12px;color:#666;margin-bottom:8px">
+    顔認証で判定した「認識ユーザー」を確認者として、未承認の修正一覧を表示します。
+  </div>
+  <div class="row" style="justify-content:center;margin-top:6px">
+    <button class="primary" onclick="loadPendingEdits()">未承認一覧を取得</button>
+  </div>
+  <div style="overflow:auto;max-height:50vh;margin-top:10px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr>
+          <th style="border-bottom:1px solid #eee;padding:8px 6px;text-align:left;background:#fafafa;position:sticky;top:0;min-width:84px">操作</th>
+          <th style="border-bottom:1px solid #eee;padding:8px 6px;text-align:left;background:#fafafa;position:sticky;top:0;min-width:110px">対象者</th>
+          <th style="border-bottom:1px solid #eee;padding:8px 6px;text-align:left;background:#fafafa;position:sticky;top:0;min-width:100px">日付</th>
+          <th style="border-bottom:1px solid #eee;padding:8px 6px;text-align:left;background:#fafafa;position:sticky;top:0;min-width:110px">項目</th>
+          <th style="border-bottom:1px solid #eee;padding:8px 6px;text-align:left;background:#fafafa;position:sticky;top:0;min-width:160px">変更前 → 変更後</th>
+          <th style="border-bottom:1px solid #eee;padding:8px 6px;text-align:left;background:#fafafa;position:sticky;top:0;min-width:200px">申請者/理由</th>
+        </tr>
+      </thead>
+      <tbody id="approveTbody">
+        <tr><td colspan="6" style="padding:10px 6px;font-size:12px;color:#666">未承認一覧はまだ取得していません。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
   <div class="panel">
     <h3 style="margin:0 0 6px;">ログ</h3>
     <div id="log"></div>
@@ -212,12 +239,85 @@ async function recognize() {
     recognizedName=null;
     document.getElementById('userName').textContent='未認識';
     setStatus('未認識');
+    showApprovePanelIfConfirmer();
     return;
   }
   recognizedName=best.name;
   document.getElementById('userName').textContent=recognizedName;
   setStatus('認証OK: '+recognizedName);
   log('認証OK: '+recognizedName+' dist='+best.dist.toFixed(3));
+  showApprovePanelIfConfirmer();
+}
+
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+function showApprovePanelIfConfirmer(){
+  const panel=document.getElementById('approvePanel');
+  if(!panel) return;
+  if(recognizedName){
+    panel.style.display='block';
+  }else{
+    panel.style.display='none';
+  }
+}
+
+async function loadPendingEdits(){
+  if(!recognizedName) return alert('先に顔認証してください（確認者名が必要です）');
+  try{
+    setStatus('未承認一覧を取得中...');
+    const payload = await apiJsonpRaw('listPendingEditsForConfirmer', { confirmer: recognizedName });
+    log('listPendingEditsForConfirmer payload: ' + JSON.stringify(payload).slice(0, 800) + (JSON.stringify(payload).length>800?'...':''));
+    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
+
+    const rows = payload.data || [];
+    const tbody=document.getElementById('approveTbody');
+    tbody.innerHTML='';
+    if(!rows.length){
+      tbody.innerHTML='<tr><td colspan="6" style="padding:10px 6px;font-size:12px;color:#666">未承認の修正はありません。</td></tr>';
+      setStatus('未承認なし');
+      return;
+    }
+
+    rows.forEach(r=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML = `
+        <td style="border-bottom:1px solid #eee;padding:8px 6px;">
+          <button class="primary" data-row="${esc(r.rowNo)}">承認</button>
+        </td>
+        <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.name||'')}</td>
+        <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.dateStr||'')}</td>
+        <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.field||'')}</td>
+        <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.before||'')} → ${esc(r.after||'')}</td>
+        <td style="border-bottom:1px solid #eee;padding:8px 6px;font-size:12px;color:#555">${esc((r.requester||'')+(r.reason?(' / '+r.reason):''))}</td>
+      `;
+      tbody.appendChild(tr);
+      tr.querySelector('button').addEventListener('click', ()=>approveRow(r));
+    });
+
+    setStatus('一覧取得OK: '+rows.length+'件');
+  }catch(e){
+    setStatus('一覧取得NG: '+e.message);
+    log('listPendingEditsForConfirmer error: '+e.message);
+    alert('一覧取得NG: '+e.message);
+  }
+}
+
+async function approveRow(r){
+  if(!recognizedName) return alert('先に顔認証してください');
+  const rowNo = Number(r && r.rowNo || 0);
+  if(!rowNo) return alert('rowNoが不正です');
+  try{
+    setStatus('承認中...');
+    const payload = await apiJsonpRaw('approveEdit', { rowNo: String(rowNo), confirmer: recognizedName });
+    log('approveEdit payload: '+JSON.stringify(payload));
+    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
+    setStatus('承認しました');
+    await loadPendingEdits();
+  }catch(e){
+    setStatus('承認NG: '+e.message);
+    log('approveEdit error: '+e.message);
+    alert('承認NG: '+e.message);
+  }
 }
 
 async function punch(kind) {

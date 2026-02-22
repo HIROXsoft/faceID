@@ -201,16 +201,16 @@
 
   <h1>顔認証出退勤 試運転用:3/23～4/24</h1>
 
-<!-- 外部ホスト設定（GAS内で開いた場合は非表示） -->
+<!-- 接続設定（GAS内で開いた場合は非表示） -->
 <div class="panel" id="extSettings" style="display:none">
-  <h3 style="margin-top:0;">外部ホスト設定</h3>
+  <h3 style="margin-top:0;">接続設定</h3>
   <div class="row">
     <input id="webappUrl" class="input" style="min-width:340px;flex:1" placeholder="GAS WebアプリURL（.../exec）">
     <input id="apiKey" class="input" style="min-width:240px" placeholder="APIキー">
     <button class="btn btn-primary" onclick="saveSettings()">保存</button>
-    <button class="btn" onclick="apiPing()">疎通確認</button>
+    <button class="btn" onclick="apiPing()">接続確認</button>
   </div>
-  <div class="small" style="margin-top:6px;color:#666">※外部ホストからはJSONPでGASを呼び出します（CORS回避）。</div>
+  <div class="small" style="margin-top:6px;color:#666"></div>
 </div>
 
 
@@ -237,24 +237,23 @@
   <!-- ② 顔認証 -->
   <div class="panel">
     <h3>② 顔認証 → 出勤 / 退勤</h3>
-    <button class="btn btn-primary" onclick="onRecognizeFace()">顔認証</button>
-
-    <hr />
-
-    <h4>出勤</h4>    <button class="btn btn-primary" onclick="onClickStart()">出勤打刻</button>
-
-    <h4>退勤</h4>    <button class="btn btn-primary" onclick="onClickEnd()">退勤打刻</button>
-  </div>
+    
+    <div class="row" style="justify-content:center;">
+      <button class="btn btn-primary" onclick="onRecognizeFace()">顔認証</button>
+      <button class="btn btn-primary" onclick="onClickStart()">出勤打刻</button>
+      <button class="btn btn-primary" onclick="onClickEnd()">退勤打刻</button>
+    </div>
+</div>
 
   <!-- 私用外出 -->
   <div class="panel">
     <h3>私用外出</h3>
-    <p style="font-size:0.9rem;">外出開始と戻りを記録します</p>
+    <p style="font-size:0.9rem;"></p>
     <div style="margin-bottom:8px;">
       <input type="text" id="privateMemo" placeholder="メモ（任意）" style="width:320px; padding:8px; border:1px solid #ccc; border-radius:10px;">
     </div>
-    <button class="btn btn-primary" onclick="onPrivateOut()">外出開始</button>
-    <button class="btn btn-primary" onclick="onPrivateBack()">戻り</button>
+    <button class="btn btn-primary" onclick="onPrivateOut()">外出</button>
+    <button class="btn btn-primary" onclick="onPrivateBack()">戻</button>
   </div>
 
 
@@ -294,7 +293,7 @@
   </div>
 
   <!-- ログ -->
-  <div class="panel">
+  <div class="panel" style="display:none;">
     <h3>ログ</h3>
     <div id="log"></div>
   </div>
@@ -621,7 +620,7 @@ async function saveFaceDescriptorsSafe(registerName, descriptorsObj){
 
 function apiPing(){
   if(isGasHost()){
-    alert('GASホストで動作中のため疎通確認は不要です');
+    alert('GASホストで動作中のため接続確認は不要です');
     return;
   }
   apiJsonpRaw('ping', [])

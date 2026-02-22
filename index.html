@@ -663,9 +663,9 @@ function renderApproveRows(rows){
       <td style="border-bottom:1px solid #eee;padding:8px 6px;">
         <button class="btn btn-primary" data-row="${esc(r.rowNo)}">承認</button>
       </td>
-      <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.target||r.name||'')}</td>
+      <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.userName || r.name || r.target || '')}</td>
       <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.date||r.dateStr||'')}</td>
-      <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.mode||r.field||'')}</td>
+      <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.kubunLabel || (r.field==='start'?'出勤':r.field==='end'?'退勤':(r.mode||r.field||'')))}</td>
       <td style="border-bottom:1px solid #eee;padding:8px 6px;">${esc(r.oldValue||r.before||'')} → ${esc(r.newValue||r.after||'')}</td>
       <td style="border-bottom:1px solid #eee;padding:8px 6px;font-size:12px;color:#555">
         ${esc((r.actor||r.requester||'') + ' / ' + (r.sheet||'') + ' / ' + (r.editedAt||r.createdAt||''))}

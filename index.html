@@ -40,6 +40,12 @@
         /* ========================================================
            基本スタイル
            ======================================================== */
+
+        html, body {
+            overscroll-behavior: none;
+            touch-action: manipulation;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: linear-gradient(135deg, var(--bg-start), var(--bg-end));
@@ -267,20 +273,34 @@
         // 🕒 【新設】超シンプル発信＆高速引き戻し処理
         // ========================================================
         function triggerCall(dialpadNumber) {
-            // 1. まずiPad側を「呼び出し中」の画面にする
+            // 1. 呼出中画面を表示
             showPage('page-calling');
             updateCallingText();
 
-            // 2. Dialpadアプリを起動して発信（元のURLスキームを実行）
-            window.location.href = "dialpad:" + dialpadNumber;
+            // 2. 現在URLを保存
+            const currentUrl = window.location.href;
 
-            // 3. 【ここがキモ】1秒（1000ミリ秒）後に自分自身を呼び戻す
+            // 3. Dialpad起動
+            // iPad Safari対策として iframe 経由で呼び出す
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.src = "dialpad:" + dialpadNumber;
+            document.body.appendChild(iframe);
+
+            // 4. Dialpad起動後にブラウザを前面復帰
             setTimeout(() => {
-                // 自分自身の現在のURLに再アクセスすることでブラウザを最前面に復帰させる
-                window.location.href = window.location.href;
-            }, 1000);
+                window.location.replace(currentUrl);
 
-            // 4. 10秒後に自動でトップ画面に戻す
+                // フォーカスを強制的に戻す
+                window.focus();
+
+                // 不要iframe削除
+                if (iframe.parentNode) {
+                    iframe.parentNode.removeChild(iframe);
+                }
+            }, 800);
+
+            // 5. 10秒後にトップへ戻す
             setTimeout(() => {
                 showPage('page-top');
             }, 10000);

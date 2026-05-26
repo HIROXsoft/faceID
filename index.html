@@ -184,7 +184,7 @@
     <div id="page-top" class="page active">
         <h1 id="text-top-title">いらっしゃいませ。ご用件をお選びください</h1>
         <div class="btn-container">
-            <button class="main-btn" onclick="triggerCall('05017530562')" id="btn-general">総合受付</button>         
+            <button class="main-btn" onclick="triggerCall('05017541479')" id="btn-general">総合受付</button>         
             <button class="main-btn" onclick="triggerCall('05017541479')" id="btn-delivery">配達・集荷</button>
             <button class="main-btn" onclick="showPage('page-dept')" id="btn-call">担当者呼出</button>
         </div>
@@ -249,8 +249,8 @@
             <div class="loader"></div>
             <p class="status-msg" id="text-calling-msg">担当者が応答するまで、<br>そのままで少々お待ちください。</p>
             <p class="status-msg" style="font-size:16px; font-weight:normal;">
-                iPadで確認画面が出た場合は「発信」を押してください。<br>
-                発信後、自動で「1」を送信する設定です。
+                iPadで発信確認が表示されたら「発信」を押してください。<br>
+                発信後、自動で「1」を送信します。
             </p>
         </div>
     </div>
@@ -273,25 +273,36 @@
         }
 
         // ========================================================
-        // 📞 iPad対応 自動発信 + DTMF「1」送信処理
+        // 🕒 【新設】超シンプル発信＆高速引き戻し処理
+        // ========================================================
+                // ========================================================
+        // 📞 iPad最優先 発信URL即時実行版
         // ========================================================
         function triggerCall(phoneNumber) {
-            // 1. 受付画面側を呼出中表示にする
-            showPage('page-calling');
-            updateCallingText();
+            // iPad Safariは「ユーザータップ直後」の外部起動以外を
+            // ブロックしやすいため、最初に tel: を実行する。
 
-            // 2. iPad/iOS向けに番号を整理
             const cleanNumber = String(phoneNumber).replace(/[^0-9+]/g, '');
 
-            // 3. iPadでは |1 ではなく「,」で待機してからDTMF送信する
-            //    「,,,,1」= 発信後に少し待ってから 1 を送信
-            //    DialpadがiPadの通話アプリとして反応する環境では、この形式が最も通りやすい
+            // 「,,,,1」= 発信後 少し待ってからDTMF「1」
             const callUrl = "tel:" + cleanNumber + ",,,,1";
 
-            // 4. ユーザーのタップ直後に直接起動する
+            // 1. 最優先で発信
             window.location.href = callUrl;
 
-            // 5. Safariへ戻った後、10秒後にトップ画面へ戻す
+            // 2. その後に画面切替
+            setTimeout(() => {
+                showPage('page-calling');
+                updateCallingText();
+            }, 50);
+
+            // 3. Safariへ戻った後トップへ戻す
+            setTimeout(() => {
+                showPage('page-top');
+            }, 10000);
+        }, 1000);
+
+            // 4. 10秒後に自動でトップ画面に戻す
             setTimeout(() => {
                 showPage('page-top');
             }, 10000);

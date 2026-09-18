@@ -11,9 +11,12 @@
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     input,select{padding:10px 12px;border-radius:10px;border:1px solid #ccc;font-size:16px;box-sizing:border-box}
     button{padding:10px 14px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:16px}
+    button:disabled{opacity:.55;cursor:default}
     .primary{background:#1976d2;border-color:#1976d2;color:#fff}
     .small{font-size:12px;color:#666}
     #status{font-size:13px;margin-top:6px}
+    .ok{color:#0a7a28}
+    .warn{color:#8a5a00}
     table{width:100%;border-collapse:collapse;background:#fff}
     th,td{border-bottom:1px solid #eee;padding:10px 8px;text-align:left;font-size:14px;vertical-align:top}
     th{background:#fafafa;position:sticky;top:0;z-index:1;white-space:nowrap}
@@ -27,16 +30,20 @@
 <body>
   <div class="panel">
     <h2 style="margin:0 0 6px;">出勤状況一覧</h2>
+
     <div class="row" style="margin-top:10px">
       <select id="period" style="min-width:180px">
         <option value="today">当日の出勤状況</option>
         <option value="week">今週の出勤状況</option>
       </select>
+
       <select id="groupFilter" style="min-width:220px">
         <option value="">全グループ</option>
       </select>
+
       <input id="nameFilter" style="min-width:220px;flex:1" placeholder="氏名で検索"/>
-      <button class="primary" onclick="refreshList()">一覧更新</button>
+
+      <button class="primary" id="refreshBtn">最新情報を取得</button>
     </div>
 
     <div id="summary" class="small" style="margin-top:8px"></div>
@@ -54,180 +61,393 @@
 
 <script>
 // =========================================================
-// 設定はここだけ変更してください
-// 1) GASのデプロイ後に発行された /exec のURL
-// 2) GAS側で設定しているAPIキー
+// このHTMLは「旧API互換版GAS」とセットです。
 // =========================================================
 const APP_CONFIG = {
-  WEBAPP_URL: 'https://script.google.com/macros/s/AKfycbxpu4nVSBsbIlPfrCZdRxq-P37CSYDxnnRimWnTZAVHYKBDKYriEV-DPq2se39BM5U-5g/exec',
+  WEBAPP_URL: 'https://script.google.com/macros/s/AKfycbzfy6PXWdDkeFPUkJiBzNIs0VGFRouX-21bBUSXlOEkNH13JqjduPis1PwDCLwK395Q/exec',
   API_KEY: 'hirox'
 };
+
+const CLIENT_CONFIG = {
+  REQUEST_TIMEOUT_MS: 30000,
+  CACHE_PREFIX: 'hirox_att_status_v3_'
+};
+
+let currentData = null;
 let latestGroups = [];
+let loading = false;
 
-function setStatus(m){ document.getElementById('status').textContent = m || ''; }
-function setSummary(m){ document.getElementById('summary').textContent = m || ''; }
-function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 
-function isGasHost(){
-  return typeof google !== 'undefined' && google.script && google.script.run;
+function setStatus(m, cls){
+  const el = document.getElementById('status');
+  el.textContent = m || '';
+  el.className = cls || '';
 }
-function loadSettings(){
-  // ローカル運用版では APP_CONFIG を直接使います。
+
+function setSummary(m){
+  document.getElementById('summary').textContent = m || '';
 }
-function saveSettings(){
-  setStatus('このローカル運用版では保存操作は不要です。APP_CONFIG を直接変更してください。');
-}
+
 function getBase(){
-  const url=String(APP_CONFIG.WEBAPP_URL || '').trim();
-  const key=String(APP_CONFIG.API_KEY || '').trim();
-  if(!url || !key || /REPLACE_WITH_YOUR_/.test(url) || /REPLACE_WITH_YOUR_/.test(key)){
-    throw new Error('ファイル先頭の APP_CONFIG の WEBAPP_URL / API_KEY を設定してください');
+  const url = String(APP_CONFIG.WEBAPP_URL || '').trim();
+  const key = String(APP_CONFIG.API_KEY || '').trim();
+
+  if(!url || url.indexOf('ここに') >= 0){
+    throw new Error('APP_CONFIG.WEBAPP_URL に /exec URL を設定してください');
   }
-  return {url, key};
+
+  return {url:url, key:key};
 }
-function apiJsonpRaw(fn, params={}){
-  const base=getBase();
-  const u=new URL(base.url);
+
+// =========================================================
+// 以前動作していたHTMLと同じJSONP形式
+// api=1 / fn=getAttendanceStatusBoard
+// =========================================================
+function apiJsonpRaw(fn, params){
+  params = params || {};
+
+  const base = getBase();
+  const u = new URL(base.url);
+
   u.searchParams.set('api','1');
   u.searchParams.set('fn',fn);
   u.searchParams.set('key',base.key);
-  Object.keys(params).forEach(k=>u.searchParams.set(k, params[k]));
-  const cb='__cb_'+Math.random().toString(36).slice(2)+Date.now();
+
+  Object.keys(params).forEach(k => {
+    u.searchParams.set(k, params[k]);
+  });
+
+  const cb = '__cb_' + Math.random().toString(36).slice(2) + Date.now();
   u.searchParams.set('callback', cb);
+
   return new Promise((resolve,reject)=>{
-    const t=setTimeout(()=>{ cleanup(); reject(new Error('timeout')); }, 60000);
+    let settled = false;
+    let script = document.createElement('script');
+
+    const timer = setTimeout(()=>{
+      if(settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('timeout'));
+    }, CLIENT_CONFIG.REQUEST_TIMEOUT_MS);
+
     function cleanup(){
-      clearTimeout(t);
-      try{ delete window[cb]; }catch(e){ window[cb]=undefined; }
+      clearTimeout(timer);
+      try{ delete window[cb]; }catch(e){ window[cb] = undefined; }
       if(script && script.parentNode) script.parentNode.removeChild(script);
     }
-    window[cb]=(payload)=>{ cleanup(); resolve(payload); };
-    const script=document.createElement('script');
-    script.src=u.toString();
-    script.async=true;
-    script.onerror=()=>{ cleanup(); reject(new Error('script load error')); };
+
+    window[cb] = payload => {
+      if(settled) return;
+      settled = true;
+      cleanup();
+      resolve(payload);
+    };
+
+    script.onerror = () => {
+      if(settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('script load error'));
+    };
+
+    script.async = true;
+    script.src = u.toString();
     document.head.appendChild(script);
   });
 }
-function callApi(fn, params){
-  if(isGasHost()){
-    return new Promise((resolve,reject)=>{
-      google.script.run
-        .withSuccessHandler(resolve)
-        .withFailureHandler(err=>reject(new Error(err && err.message ? err.message : String(err))))
-        [fn](...(params||[]));
-    });
-  }
-  const map = {
-    getAttendanceStatusBoard: 'getAttendanceStatusBoard'
-  };
-  const apiFn = map[fn];
-  if(!apiFn) return Promise.reject(new Error('unknown api function'));
-  const p = {
-    period: params[0] || 'today',
-    group: params[1] || '',
-    name: params[2] || ''
-  };
-  return apiJsonpRaw(apiFn, p).then(payload=>{
-    if(!payload || payload.ok !== true) throw new Error((payload && payload.error) ? payload.error : 'api error');
-    return payload.data;
-  });
+
+function cacheKey(period){
+  return CLIENT_CONFIG.CACHE_PREFIX + period;
 }
+
+function saveLocal(period, data){
+  try{
+    localStorage.setItem(
+      cacheKey(period),
+      JSON.stringify({
+        savedAt:Date.now(),
+        data:data
+      })
+    );
+  }catch(e){}
+}
+
+function loadLocal(period){
+  try{
+    const raw = localStorage.getItem(cacheKey(period));
+    if(!raw) return null;
+
+    const obj = JSON.parse(raw);
+    if(!obj || !obj.data) return null;
+
+    return obj;
+  }catch(e){
+    return null;
+  }
+}
+
+function fmtAge(ms){
+  const sec = Math.max(0, Math.floor(ms/1000));
+  if(sec < 60) return sec + '秒前';
+
+  const min = Math.floor(sec/60);
+  if(min < 60) return min + '分前';
+
+  return Math.floor(min/60) + '時間前';
+}
+
 function populateGroups(groups){
   latestGroups = Array.isArray(groups) ? groups.slice() : [];
+
   const sel = document.getElementById('groupFilter');
   const current = sel.value;
+
   sel.innerHTML = '<option value="">全グループ</option>';
+
   latestGroups.forEach(g => {
     const opt = document.createElement('option');
     opt.value = g;
     opt.textContent = g;
     sel.appendChild(opt);
   });
-  if ([...sel.options].some(o => o.value === current)) sel.value = current;
+
+  if([...sel.options].some(o => o.value === current)){
+    sel.value = current;
+  }
 }
+
+function getFilteredRows(data){
+  const group = String(document.getElementById('groupFilter').value || '').trim();
+  const name = String(document.getElementById('nameFilter').value || '').trim().toLowerCase();
+
+  return (data && Array.isArray(data.rows) ? data.rows : []).filter(r => {
+    if(group && String(r.group || '') !== group) return false;
+    if(name && String(r.name || '').toLowerCase().indexOf(name) === -1) return false;
+    return true;
+  });
+}
+
 function renderToday(data){
-  const thead = document.getElementById('thead');
-  const tbody = document.getElementById('tbody');
-  const rows = Array.isArray(data.rows) ? data.rows : [];
-  thead.innerHTML = '<tr>'+
-    '<th style="min-width:160px">グループ</th>'+
-    '<th style="min-width:160px">氏名</th>'+
-    '<th class="center" style="min-width:120px">出勤時刻</th>'+
-    '<th class="center" style="min-width:120px">退勤時刻</th>'+
+  const rows = getFilteredRows(data);
+
+  document.getElementById('thead').innerHTML =
+    '<tr>' +
+      '<th style="min-width:160px">グループ</th>' +
+      '<th style="min-width:160px">氏名</th>' +
+      '<th class="center" style="min-width:120px">出勤時刻</th>' +
+      '<th class="center" style="min-width:120px">退勤時刻</th>' +
     '</tr>';
-  tbody.innerHTML='';
+
   if(!rows.length){
-    tbody.innerHTML='<tr><td colspan="4" class="small">該当データはありません。</td></tr>';
+    document.getElementById('tbody').innerHTML =
+      '<tr><td colspan="4" class="small">該当データはありません。</td></tr>';
     return;
   }
-  rows.forEach(r=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML =
-      '<td>'+esc(r.group||'')+'</td>'+
-      '<td>'+esc(r.name||'')+'</td>'+
-      '<td class="center nowrap">'+(r.start ? esc(r.start) : '<span class="muted">-</span>')+'</td>'+
-      '<td class="center nowrap">'+(r.end ? esc(r.end) : '<span class="muted">-</span>')+'</td>';
-    tbody.appendChild(tr);
-  });
-}
-function renderWeek(data){
-  const thead = document.getElementById('thead');
-  const tbody = document.getElementById('tbody');
-  const cols = Array.isArray(data.columns) ? data.columns : [];
-  const rows = Array.isArray(data.rows) ? data.rows : [];
-  let h = '<tr><th style="min-width:160px">グループ</th><th style="min-width:160px">氏名</th>';
-  cols.forEach(c => { h += '<th class="center weekcell">'+esc(c.label||'')+'</th>'; });
-  h += '</tr>';
-  thead.innerHTML = h;
-  tbody.innerHTML = '';
-  if(!rows.length){
-    tbody.innerHTML='<tr><td colspan="'+String(cols.length + 2)+'" class="small">該当データはありません。</td></tr>';
-    return;
-  }
+
+  let html = '';
+
   rows.forEach(r => {
-    const tr=document.createElement('tr');
-    let html = '<td>'+esc(r.group||'')+'</td><td>'+esc(r.name||'')+'</td>';
-    (r.days||[]).forEach(d => {
-      const body = (d.start || d.end)
-        ? '<div class="subtime">出: '+esc(d.start||'-')+'<br>退: '+esc(d.end||'-')+'</div>'
-        : '<span class="muted">-</span>';
-      html += '<td class="center weekcell">'+body+'</td>';
-    });
-    tr.innerHTML = html;
-    tbody.appendChild(tr);
+    html +=
+      '<tr>' +
+        '<td>' + esc(r.group || '') + '</td>' +
+        '<td>' + esc(r.name || '') + '</td>' +
+        '<td class="center nowrap">' +
+          (r.start ? esc(r.start) : '<span class="muted">-</span>') +
+        '</td>' +
+        '<td class="center nowrap">' +
+          (r.end ? esc(r.end) : '<span class="muted">-</span>') +
+        '</td>' +
+      '</tr>';
   });
+
+  document.getElementById('tbody').innerHTML = html;
 }
-async function refreshList(){
-  const period = (document.getElementById('period').value || 'today').trim();
-  const group = (document.getElementById('groupFilter').value || '').trim();
-  const name = (document.getElementById('nameFilter').value || '').trim();
-  try{
-    setStatus('読み込み中...（人数が多い場合は少し時間がかかります）');
-    const data = await callApi('getAttendanceStatusBoard', [period, group, name]);
-    populateGroups(data.groups || []);
-    if (data.period === 'week') {
-      renderWeek(data);
-      setSummary((data.title || '今週の出勤状況') + ' / ' + (data.weekLabel || '') + ' / ' + ((data.rows||[]).length) + '件');
-    } else {
-      renderToday(data);
-      setSummary((data.title || '当日の出勤状況') + ' / ' + (data.dateLabel || '') + ' / ' + ((data.rows||[]).length) + '件');
-    }
-    setStatus('読み込み完了');
-  }catch(e){
-    document.getElementById('thead').innerHTML='';
-    document.getElementById('tbody').innerHTML = '<tr><td class="small">一覧取得NG: '+esc(e.message)+'</td></tr>';
-    setSummary('');
-    setStatus('一覧取得NG: ' + e.message);
+
+function renderWeek(data){
+  const rows = getFilteredRows(data);
+  const cols = Array.isArray(data.columns) ? data.columns : [];
+
+  let th =
+    '<tr>' +
+      '<th style="min-width:160px">グループ</th>' +
+      '<th style="min-width:160px">氏名</th>';
+
+  cols.forEach(c => {
+    th += '<th class="center weekcell">' + esc(c.label || '') + '</th>';
+  });
+
+  th += '</tr>';
+  document.getElementById('thead').innerHTML = th;
+
+  if(!rows.length){
+    document.getElementById('tbody').innerHTML =
+      '<tr><td colspan="' + (cols.length + 2) + '" class="small">該当データはありません。</td></tr>';
+    return;
+  }
+
+  let html = '';
+
+  rows.forEach(r => {
+    html += '<tr><td>' + esc(r.group || '') + '</td><td>' + esc(r.name || '') + '</td>';
+
+    (r.days || []).forEach(d => {
+      const body = (d.start || d.end)
+        ? '<div class="subtime">出: ' + esc(d.start || '-') +
+          '<br>退: ' + esc(d.end || '-') + '</div>'
+        : '<span class="muted">-</span>';
+
+      html += '<td class="center weekcell">' + body + '</td>';
+    });
+
+    html += '</tr>';
+  });
+
+  document.getElementById('tbody').innerHTML = html;
+}
+
+function renderCurrent(){
+  if(!currentData) return;
+
+  populateGroups(currentData.groups || []);
+
+  if(currentData.period === 'week'){
+    renderWeek(currentData);
+  }else{
+    renderToday(currentData);
+  }
+
+  const shown = getFilteredRows(currentData).length;
+  const total = Array.isArray(currentData.rows) ? currentData.rows.length : 0;
+
+  if(currentData.period === 'week'){
+    setSummary(
+      (currentData.title || '今週の出勤状況') +
+      ' / ' + (currentData.weekLabel || '') +
+      ' / 表示 ' + shown + '件（全' + total + '件）'
+    );
+  }else{
+    setSummary(
+      (currentData.title || '当日の出勤状況') +
+      ' / ' + (currentData.dateLabel || '') +
+      ' / 表示 ' + shown + '件（全' + total + '件）'
+    );
   }
 }
-window.addEventListener('load', ()=>{
-  loadSettings();
-  setStatus('ローカル/社内サーバー版で動作中');
-  document.getElementById('period').addEventListener('change', refreshList);
-  document.getElementById('groupFilter').addEventListener('change', refreshList);
-  document.getElementById('nameFilter').addEventListener('keydown', (e)=>{ if(e.key === 'Enter') refreshList(); });
-  refreshList();
+
+async function fetchLatest(period, quiet){
+  if(loading) return;
+
+  loading = true;
+
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+
+  try{
+    if(!quiet){
+      setStatus('最新情報を取得中…');
+    }
+
+    const started = performance.now();
+
+    const payload = await apiJsonpRaw(
+      'getAttendanceStatusBoard',
+      {
+        period:period,
+        group:'',
+        name:''
+      }
+    );
+
+    if(!payload || payload.ok !== true){
+      throw new Error(
+        payload && payload.error
+          ? payload.error
+          : 'api error'
+      );
+    }
+
+    currentData = payload.data;
+
+    saveLocal(period, currentData);
+    renderCurrent();
+
+    const sec = ((performance.now() - started) / 1000).toFixed(1);
+
+    setStatus(
+      '最新情報に更新しました（' + sec + '秒）',
+      'ok'
+    );
+  }catch(e){
+    if(currentData){
+      setStatus(
+        '最新取得は失敗しました。保存済みデータを表示中: ' + e.message,
+        'warn'
+      );
+    }else{
+      setSummary('');
+      document.getElementById('thead').innerHTML = '';
+      document.getElementById('tbody').innerHTML =
+        '<tr><td class="small">一覧取得NG: ' + esc(e.message) + '</td></tr>';
+
+      setStatus('一覧取得NG: ' + e.message);
+    }
+  }finally{
+    loading = false;
+    btn.disabled = false;
+  }
+}
+
+function switchPeriod(period){
+  const cached = loadLocal(period);
+
+  if(cached && cached.data){
+    currentData = cached.data;
+    renderCurrent();
+
+    setStatus(
+      '保存済みデータを即時表示中（' +
+      fmtAge(Date.now() - Number(cached.savedAt || 0)) +
+      '）',
+      'warn'
+    );
+
+    // 表示を止めずに裏で最新化
+    fetchLatest(period, true);
+    return;
+  }
+
+  currentData = null;
+
+  document.getElementById('thead').innerHTML = '';
+  document.getElementById('tbody').innerHTML =
+    '<tr><td class="small">初回データを取得中…</td></tr>';
+
+  fetchLatest(period, false);
+}
+
+window.addEventListener('load', () => {
+  document.getElementById('period').addEventListener('change', e => {
+    switchPeriod(String(e.target.value || 'today'));
+  });
+
+  // 絞り込みはブラウザ内だけ
+  document.getElementById('groupFilter').addEventListener('change', renderCurrent);
+  document.getElementById('nameFilter').addEventListener('input', renderCurrent);
+
+  document.getElementById('refreshBtn').addEventListener('click', () => {
+    const period = String(document.getElementById('period').value || 'today');
+    fetchLatest(period, false);
+  });
+
+  switchPeriod(
+    String(document.getElementById('period').value || 'today')
+  );
 });
 </script>
 </body>
